@@ -48,29 +48,6 @@ jobs:
       - name: Build app
         run: pnpm build
 
-      - name: Prune dev dependencies
-        run: pnpm prune --prod
-
-      - name: Prepare deployment artifact
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p deploy-package
-          cp -R .next deploy-package/.next
-          cp -R public deploy-package/public
-          cp -R scripts deploy-package/scripts
-          cp -R prisma deploy-package/prisma
-          cp -R node_modules deploy-package/node_modules
-          cp package.json deploy-package/package.json
-          cp pnpm-lock.yaml deploy-package/pnpm-lock.yaml
-          cp next.config.mjs deploy-package/next.config.mjs
-
-      - name: Upload deployment artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: doctorai-aptiqo-package
-          path: deploy-package
-
   deploy:
     runs-on: ubuntu-latest
     needs: build
@@ -79,11 +56,8 @@ jobs:
       url: ${{ steps.deploy-to-webapp.outputs.webapp-url }}
 
     steps:
-      - name: Download deployment artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: doctorai-aptiqo-package
-          path: .
+      - name: Checkout
+        uses: actions/checkout@v4
 
       - name: Deploy to Azure App Service
         id: deploy-to-webapp
@@ -91,4 +65,4 @@ jobs:
         with:
           app-name: ${{ env.AZURE_WEBAPP_NAME }}
           publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_DOCTORAI_APTIQO }}
-          package: .
+          package: ${{ github.workspace }}
