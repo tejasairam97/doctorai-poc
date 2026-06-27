@@ -1,0 +1,16 @@
+{
+  "name": "DoctorAI",
+  "short_name": "DoctorAI",
+  "description": "Doctor-side clinical documentation MVP",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f6faf7",
+  "theme_color": "#355c47",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml"
+    }
+  ]
+}

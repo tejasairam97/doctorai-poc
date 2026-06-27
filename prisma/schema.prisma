@@ -1,0 +1,106 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model DoctorAccount {
+  id           String   @id @default(cuid())
+  name         String
+  email        String   @unique
+  passwordHash String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  visits      Visit[]
+  usageEvents UsageEvent[]
+
+  @@map("doctor_accounts")
+}
+
+model Patient {
+  id        String   @id @default(cuid())
+  name      String
+  age       Int
+  email     String
+  phone     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  visits Visit[]
+
+  @@map("patients")
+}
+
+model Visit {
+  id                            String    @id @default(cuid())
+  doctorId                      String
+  patientId                     String
+  consentStatus                 String    @default("UNKNOWN") @map("consent_status")
+  inputModeRequested            String    @default("DOCTOR_SELF_SUMMARY") @map("input_mode_requested")
+  inputModeActual               String    @default("DOCTOR_SELF_SUMMARY") @map("input_mode_actual")
+  status                        String    @default("DRAFT")
+  transcriptText                String    @default("") @map("transcript_text")
+  normalizedTranscriptText      String?   @map("normalized_transcript_text")
+  draftSummary                  String?   @map("draft_summary")
+  approvedSummary               String?   @map("approved_summary")
+  unencryptedEmailConsent       Boolean   @default(false) @map("unencrypted_email_consent")
+  unencryptedEmailConsentStatus String    @default("NOT_ASKED") @map("unencrypted_email_consent_status")
+  resumeCount                   Int       @default(0) @map("resume_count")
+  interruptionReason            String?   @map("interruption_reason")
+  transcriptLastSavedAt         DateTime? @map("transcript_last_saved_at")
+  approvedAt                    DateTime? @map("approved_at")
+  emailedAt                     DateTime? @map("emailed_at")
+  draftGenerationCount          Int       @default(0) @map("draft_generation_count")
+  createdAt                     DateTime  @default(now()) @map("created_at")
+  updatedAt                     DateTime  @updatedAt @map("updated_at")
+
+  doctor            DoctorAccount      @relation(fields: [doctorId], references: [id])
+  patient           Patient            @relation(fields: [patientId], references: [id])
+  usageEvents       UsageEvent[]
+  emailDeliveryLogs EmailDeliveryLog[]
+
+  @@index([doctorId])
+  @@index([doctorId, status])
+  @@index([doctorId, createdAt])
+  @@index([patientId])
+  @@map("visits")
+}
+
+model UsageEvent {
+  id        String   @id @default(cuid())
+  doctorId  String   @map("doctor_id")
+  visitId   String?  @map("visit_id")
+  type      String
+  metadata  String?
+  createdAt DateTime @default(now()) @map("created_at")
+
+  doctor DoctorAccount @relation(fields: [doctorId], references: [id])
+  visit  Visit?        @relation(fields: [visitId], references: [id])
+
+  @@index([doctorId])
+  @@index([visitId])
+  @@index([type])
+  @@index([createdAt])
+  @@map("usage_events")
+}
+
+model EmailDeliveryLog {
+  id         String   @id @default(cuid())
+  visitId    String   @map("visit_id")
+  recipient  String
+  status     String
+  providerId String?  @map("provider_id")
+  error      String?
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  visit Visit @relation(fields: [visitId], references: [id])
+
+  @@index([visitId])
+  @@index([status])
+  @@index([createdAt])
+  @@map("email_delivery_logs")
+}
