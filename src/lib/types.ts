@@ -120,6 +120,28 @@ export type PatientPortalVisit = {
   createdAt: string | Date;
 };
 
+export type PatientSummaryLinkAccess =
+  | {
+      status: "invalid";
+    }
+  | {
+      status: "expired";
+      maskedPatientEmail: string;
+      expiresAt: string | Date;
+    }
+  | {
+      status: "verification_required";
+      maskedPatientEmail: string;
+      expiresAt: string | Date;
+      sessionEmail?: string | null;
+    }
+  | {
+      status: "authorized";
+      expiresAt: string | Date;
+      usedAt?: string | Date | null;
+      visit: PatientPortalVisit;
+    };
+
 export type PatientPortalProgressGroup = {
   doctor: {
     id: string;

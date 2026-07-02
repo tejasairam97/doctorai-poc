@@ -59,6 +59,11 @@ type SummaryResponse = {
 
 type ApproveResponse = {
   visit: VisitWithPatient;
+  emailDeliveryLog?: EmailDeliveryLog;
+  emailSimulated?: boolean;
+  emailSkipped?: boolean;
+  emailMessage?: string;
+  emailError?: string;
 };
 
 type EmailResponse = {
@@ -98,6 +103,8 @@ type RuntimeConfigResponse = {
 type EmailConsentStatus = "APPROVED" | "DECLINED" | "NOT_ASKED";
 type PatientHistoryTab = "VISIT_HISTORY" | "PROGRESS_SUMMARY";
 type PublicAccessMode = "doctor" | "patient";
+type DoctorLoginMethod = "password" | "otp";
+type DoctorOtpStep = "EMAIL" | "CODE";
 type PatientOtpStep = "EMAIL" | "CODE";
 type PatientPortalTab = "VISITS" | "PROGRESS";
 
@@ -607,6 +614,9 @@ export default function Home() {
   const [publicAccessMode, setPublicAccessMode] = useState<PublicAccessMode>("doctor");
   const [authMode, setAuthMode] = useState<"signup" | "login">("signup");
   const [authForm, setAuthForm] = useState({ name: "", email: "", password: "" });
+  const [doctorLoginMethod, setDoctorLoginMethod] = useState<DoctorLoginMethod>("password");
+  const [doctorOtpStep, setDoctorOtpStep] = useState<DoctorOtpStep>("EMAIL");
+  const [doctorOtpCode, setDoctorOtpCode] = useState("");
   const [patientSession, setPatientSession] = useState<PatientSession | null>(null);
   const [patientOtpStep, setPatientOtpStep] = useState<PatientOtpStep>("EMAIL");
   const [patientEmail, setPatientEmail] = useState("");
@@ -1041,6 +1051,9 @@ export default function Home() {
     }
 
     setAuthMode("login");
+    setDoctorLoginMethod("password");
+    setDoctorOtpStep("EMAIL");
+    setDoctorOtpCode("");
     setAuthForm({
       name: "",
       email: runtimeConfig.demoLogin.email,
@@ -1048,6 +1061,14 @@ export default function Home() {
     });
     setError("");
     setNotice("Demo credentials filled.");
+  }
+
+  async function enterDoctorApp(nextDoctor: PublicDoctor, message: string) {
+    setDoctor(nextDoctor);
+    window.localStorage.setItem("doctorai.doctor", JSON.stringify(nextDoctor));
+    const nextVisits = await loadVisits(nextDoctor.id);
+    if (nextVisits[0]) await selectVisit(nextVisits[0]);
+    setNotice(message);
   }
 
   async function submitAuth(event: FormEvent<HTMLFormElement>) {
@@ -1061,13 +1082,63 @@ export default function Home() {
         method: "POST",
         body: JSON.stringify({ ...authForm, mode: authMode })
       });
-      setDoctor(result.doctor);
-      window.localStorage.setItem("doctorai.doctor", JSON.stringify(result.doctor));
-      const nextVisits = await loadVisits(result.doctor.id);
-      if (nextVisits[0]) await selectVisit(nextVisits[0]);
-      setNotice(authMode === "signup" ? "Account created." : "Welcome back.");
+      await enterDoctorApp(result.doctor, authMode === "signup" ? "Account created." : "Welcome back.");
     } catch (authError) {
       setError(authError instanceof Error ? authError.message : "Authentication failed");
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
+  async function requestDoctorOtp(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const normalizedEmail = authForm.email.trim().toLowerCase();
+    if (!normalizedEmail.includes("@")) {
+      setError("Enter a valid doctor email.");
+      return;
+    }
+
+    setError("");
+    setNotice("");
+    setIsBusy(true);
+
+    try {
+      const result = await api<{ ok: boolean; message: string }>("/api/auth/otp/request", {
+        method: "POST",
+        body: JSON.stringify({ email: normalizedEmail })
+      });
+      setAuthForm({ ...authForm, email: normalizedEmail });
+      setDoctorOtpStep("CODE");
+      setNotice(result.message || "If an account exists, a code has been sent.");
+    } catch (otpError) {
+      setError(otpError instanceof Error ? otpError.message : "Unable to request a login code.");
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
+  async function verifyDoctorOtp(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const normalizedEmail = authForm.email.trim().toLowerCase();
+    const code = doctorOtpCode.trim();
+    if (!/^\d{6}$/.test(code)) {
+      setError("Enter the 6-digit code.");
+      return;
+    }
+
+    setError("");
+    setNotice("");
+    setIsBusy(true);
+
+    try {
+      const result = await api<{ doctor: PublicDoctor }>("/api/auth/otp/verify", {
+        method: "POST",
+        body: JSON.stringify({ email: normalizedEmail, code })
+      });
+      setDoctorOtpCode("");
+      await enterDoctorApp(result.doctor, "Welcome back.");
+    } catch (otpError) {
+      setError(otpError instanceof Error ? otpError.message : "Verification failed.");
     } finally {
       setIsBusy(false);
     }
@@ -1204,11 +1275,17 @@ export default function Home() {
       setUnencryptedEmailConsentStatus(emailConsentStatusFromVisit(result.visit));
       setSummaryState("approved");
       setSummaryMessage("Summary approved and saved as the final version.");
-      setEmailMessage(
-        result.visit.emailedAt
-          ? `Final summary already emailed ${formatTimestamp(result.visit.emailedAt)}.`
-          : "Summary approved. Email can be sent only if patient email consent is approved."
-      );
+      if (result.emailError) {
+        setEmailMessage(result.emailError);
+      } else if (result.emailSimulated) {
+        setEmailMessage("Summary approved. Secure link email was logged as simulated because ACS is not configured.");
+      } else if (result.emailDeliveryLog || result.visit.emailedAt) {
+        setEmailMessage("Summary approved. Secure summary link sent to the patient email.");
+      } else {
+        setEmailMessage(
+          result.emailMessage || "Summary approved but not emailed. Send Secure Link is available after email consent."
+        );
+      }
       await loadVisits(doctor.id, result.visit.id);
       if (showUsage) await loadUsage();
     } catch (approvalError) {
@@ -1242,7 +1319,7 @@ export default function Home() {
         result.emailError ||
           (result.emailSimulated
             ? "Email logged as simulated because ACS placeholders are still configured."
-            : "Approved summary sent to the patient email.")
+            : "Secure summary link sent to the patient email.")
       );
       await loadVisits(doctor.id, result.visit.id);
       if (showUsage) await loadUsage();
@@ -1586,6 +1663,9 @@ export default function Home() {
                 type="button"
                 onClick={() => {
                   setAuthMode(mode);
+                  if (mode === "signup") setDoctorLoginMethod("password");
+                  setDoctorOtpStep("EMAIL");
+                  setDoctorOtpCode("");
                   setError("");
                   setNotice("");
                 }}
@@ -1598,63 +1678,152 @@ export default function Home() {
             ))}
           </div>
 
-          <form onSubmit={submitAuth} className="space-y-4">
-            {authMode === "signup" && (
+          {authMode === "login" && (
+            <div className="grid grid-cols-2 gap-2 rounded-lg bg-white p-1 shadow-soft">
+              {([
+                ["password", "Password"],
+                ["otp", "Login with email code"]
+              ] as const).map(([method, label]) => (
+                <button
+                  key={method}
+                  type="button"
+                  onClick={() => {
+                    setDoctorLoginMethod(method);
+                    setDoctorOtpStep("EMAIL");
+                    setDoctorOtpCode("");
+                    setError("");
+                    setNotice("");
+                  }}
+                  className={`min-h-11 rounded-md px-2 text-sm font-semibold ${
+                    doctorLoginMethod === method ? "bg-moss text-white" : "text-ink"
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {authMode === "signup" || doctorLoginMethod === "password" ? (
+            <form onSubmit={submitAuth} className="space-y-4">
+              {authMode === "signup" && (
+                <label className="block text-sm font-semibold text-ink">
+                  Name
+                  <input
+                    required
+                    value={authForm.name}
+                    onChange={(event) => setAuthForm({ ...authForm, name: event.target.value })}
+                    className="mt-2 h-12 w-full rounded-lg border border-mint bg-white px-3 outline-none focus:border-moss"
+                  />
+                </label>
+              )}
               <label className="block text-sm font-semibold text-ink">
-                Name
+                Email
                 <input
                   required
-                  value={authForm.name}
-                  onChange={(event) => setAuthForm({ ...authForm, name: event.target.value })}
+                  type="email"
+                  value={authForm.email}
+                  onChange={(event) => setAuthForm({ ...authForm, email: event.target.value })}
                   className="mt-2 h-12 w-full rounded-lg border border-mint bg-white px-3 outline-none focus:border-moss"
                 />
               </label>
-            )}
-            <label className="block text-sm font-semibold text-ink">
-              Email
-              <input
-                required
-                type="email"
-                value={authForm.email}
-                onChange={(event) => setAuthForm({ ...authForm, email: event.target.value })}
-                className="mt-2 h-12 w-full rounded-lg border border-mint bg-white px-3 outline-none focus:border-moss"
-              />
-            </label>
-            <label className="block text-sm font-semibold text-ink">
-              Password
-              <input
-                required
-                minLength={6}
-                type="password"
-                value={authForm.password}
-                onChange={(event) => setAuthForm({ ...authForm, password: event.target.value })}
-                className="mt-2 h-12 w-full rounded-lg border border-mint bg-white px-3 outline-none focus:border-moss"
-              />
-            </label>
-            {runtimeConfig.demoLogin.enabled && runtimeConfig.demoLogin.email && runtimeConfig.demoLogin.password && (
-              <>
-                <button
-                  type="button"
-                  onClick={useDemoCredentials}
-                  className="h-11 w-full rounded-lg border border-mint bg-white text-sm font-bold text-ink"
-                >
-                  Use demo login
-                </button>
-                <p className="rounded-lg bg-clinic px-3 py-2 text-sm font-semibold text-ink">
-                  Demo: {runtimeConfig.demoLogin.email} / {runtimeConfig.demoLogin.password}
-                </p>
-              </>
-            )}
-            {error && <p className="rounded-lg bg-coral px-3 py-2 text-sm font-semibold text-white">{error}</p>}
-            {notice && <p className="rounded-lg bg-mint px-3 py-2 text-sm font-semibold text-ink">{notice}</p>}
-            <button
-              disabled={isBusy}
-              className="flex h-12 w-full items-center justify-center gap-2 rounded-lg bg-moss font-semibold text-white"
-            >
-              {authMode === "signup" ? <UserPlus size={18} aria-hidden="true" /> : <LogIn size={18} aria-hidden="true" />}
-              {authMode === "signup" ? "Create account" : "Enter app"}
-            </button>
-          </form>
+              <label className="block text-sm font-semibold text-ink">
+                Password
+                <input
+                  required
+                  minLength={6}
+                  type="password"
+                  value={authForm.password}
+                  onChange={(event) => setAuthForm({ ...authForm, password: event.target.value })}
+                  className="mt-2 h-12 w-full rounded-lg border border-mint bg-white px-3 outline-none focus:border-moss"
+                />
+              </label>
+              {runtimeConfig.demoLogin.enabled && runtimeConfig.demoLogin.email && runtimeConfig.demoLogin.password && (
+                <>
+                  <button
+                    type="button"
+                    onClick={useDemoCredentials}
+                    className="h-11 w-full rounded-lg border border-mint bg-white text-sm font-bold text-ink"
+                  >
+                    Use demo login
+                  </button>
+                  <p className="rounded-lg bg-clinic px-3 py-2 text-sm font-semibold text-ink">
+                    Demo: {runtimeConfig.demoLogin.email} / {runtimeConfig.demoLogin.password}
+                  </p>
+                </>
+              )}
+              {error && <p className="rounded-lg bg-coral px-3 py-2 text-sm font-semibold text-white">{error}</p>}
+              {notice && <p className="rounded-lg bg-mint px-3 py-2 text-sm font-semibold text-ink">{notice}</p>}
+              <button
+                disabled={isBusy}
+                className="flex h-12 w-full items-center justify-center gap-2 rounded-lg bg-moss font-semibold text-white"
+              >
+                {authMode === "signup" ? <UserPlus size={18} aria-hidden="true" /> : <LogIn size={18} aria-hidden="true" />}
+                {authMode === "signup" ? "Create account" : "Enter app"}
+              </button>
+            </form>
+          ) : doctorOtpStep === "EMAIL" ? (
+            <form onSubmit={requestDoctorOtp} className="space-y-4">
+              <label className="block text-sm font-semibold text-ink">
+                Doctor email
+                <input
+                  required
+                  type="email"
+                  value={authForm.email}
+                  onChange={(event) => setAuthForm({ ...authForm, email: event.target.value })}
+                  className="mt-2 h-12 w-full rounded-lg border border-mint bg-white px-3 outline-none focus:border-moss"
+                />
+              </label>
+              {error && <p className="rounded-lg bg-coral px-3 py-2 text-sm font-semibold text-white">{error}</p>}
+              {notice && <p className="rounded-lg bg-mint px-3 py-2 text-sm font-semibold text-ink">{notice}</p>}
+              <button
+                disabled={isBusy}
+                className="flex h-12 w-full items-center justify-center gap-2 rounded-lg bg-moss font-semibold text-white"
+              >
+                <Mail size={18} aria-hidden="true" />
+                Send code
+              </button>
+            </form>
+          ) : (
+            <form onSubmit={verifyDoctorOtp} className="space-y-4">
+              <div className="rounded-lg bg-clinic px-3 py-2 text-sm font-semibold text-ink">
+                If an account exists, the code was sent to {authForm.email.trim().toLowerCase()}.
+              </div>
+              <label className="block text-sm font-semibold text-ink">
+                Verification code
+                <input
+                  required
+                  inputMode="numeric"
+                  maxLength={6}
+                  pattern="[0-9]{6}"
+                  value={doctorOtpCode}
+                  onChange={(event) => setDoctorOtpCode(event.target.value.replace(/\D/g, "").slice(0, 6))}
+                  className="mt-2 h-12 w-full rounded-lg border border-mint bg-white px-3 text-center text-lg font-bold tracking-[0.25em] outline-none focus:border-moss"
+                />
+              </label>
+              {error && <p className="rounded-lg bg-coral px-3 py-2 text-sm font-semibold text-white">{error}</p>}
+              {notice && <p className="rounded-lg bg-mint px-3 py-2 text-sm font-semibold text-ink">{notice}</p>}
+              <button
+                disabled={isBusy}
+                className="flex h-12 w-full items-center justify-center gap-2 rounded-lg bg-moss font-semibold text-white"
+              >
+                <LogIn size={18} aria-hidden="true" />
+                Verify and enter app
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setDoctorOtpStep("EMAIL");
+                  setDoctorOtpCode("");
+                  setNotice("");
+                  setError("");
+                }}
+                className="h-11 w-full rounded-lg border border-mint bg-white text-sm font-bold text-ink"
+              >
+                Use a different email
+              </button>
+            </form>
+          )}
             </>
           ) : (
             <div className="rounded-lg bg-white p-4 shadow-soft">
@@ -2390,7 +2559,7 @@ export default function Home() {
                 <div className="mt-3 rounded-lg border border-mint bg-white p-3">
                   <p className="text-sm font-bold text-ink">Email delivery consent</p>
                   <p className="mt-1 text-xs font-semibold text-ink/65">
-                    This controls email sending only. The summary can be approved without email consent.
+                    This controls secure summary link email only. The summary can be approved without email consent.
                   </p>
                   <div className="mt-3 grid gap-2 sm:grid-cols-3">
                     {([
@@ -2415,7 +2584,7 @@ export default function Home() {
                   </div>
                   {unencryptedEmailConsentStatus !== "APPROVED" && !activeVisit.emailedAt && (
                     <p className="mt-2 text-xs font-semibold text-coral">
-                      Send Email is unavailable until email consent is approved.
+                      Send Secure Link is unavailable until email consent is approved.
                     </p>
                   )}
                 </div>
@@ -2461,7 +2630,7 @@ export default function Home() {
                     className="flex h-10 items-center gap-2 rounded-lg border border-mint bg-white px-3 text-sm font-bold text-ink"
                   >
                     <Mail size={17} aria-hidden="true" />
-                    Send Email
+                    Send Secure Link
                   </button>
                   <span className="flex h-10 items-center gap-2 rounded-lg bg-white px-3 text-sm font-bold text-moss">
                     <FileText size={16} aria-hidden="true" />

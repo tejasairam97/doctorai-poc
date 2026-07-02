@@ -7,7 +7,7 @@ import {
   OTP_EXPIRES_IN_MINUTES,
   purposeForRoleContext
 } from "@/lib/otp";
-import { createLoginOtpChallenge } from "@/lib/store";
+import { createDoctorLoginOtpChallenge, createLoginOtpChallenge } from "@/lib/store";
 
 const GENERIC_OTP_REQUEST_MESSAGE = "If the email is eligible, a verification code has been sent.";
 
@@ -32,6 +32,33 @@ export async function POST(request: Request) {
 
     if (!isValidOtpEmail(email) || !isOtpRoleContext(roleContext)) {
       return badRequest("A valid email and role_context are required.");
+    }
+
+    if (roleContext === "doctor") {
+      const challenge = await createDoctorLoginOtpChallenge({
+        email,
+        requestIp: clientIpFromRequest(request),
+        userAgent: request.headers.get("user-agent")
+      });
+
+      if (challenge.accountExists && challenge.code) {
+        await sendOtpEmail({
+          recipient: email,
+          code: challenge.code,
+          roleContext,
+          expiresInMinutes: OTP_EXPIRES_IN_MINUTES
+        }).catch((error) => {
+          console.warn(
+            "[DoctorAI doctor OTP email delivery failed]",
+            error instanceof Error ? error.message : "Unknown doctor OTP email delivery failure"
+          );
+        });
+      }
+
+      return ok({
+        ok: true,
+        message: "If an account exists, a code has been sent."
+      });
     }
 
     const challenge = await createLoginOtpChallenge({

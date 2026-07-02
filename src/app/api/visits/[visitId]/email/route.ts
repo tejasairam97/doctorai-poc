@@ -1,6 +1,11 @@
 import { sendApprovedSummaryEmail } from "@/lib/email";
 import { badRequest, ok, serverError } from "@/lib/http";
-import { getVisit, recordEmailDelivery, updateUnencryptedEmailConsent } from "@/lib/store";
+import {
+  createPatientSummaryLinkForVisit,
+  getVisit,
+  recordEmailDelivery,
+  updateUnencryptedEmailConsent
+} from "@/lib/store";
 
 type EmailConsentStatus = "APPROVED" | "DECLINED" | "NOT_ASKED";
 
@@ -41,12 +46,12 @@ export async function POST(
         visitId,
         recipient: visit.patient.email,
         status: "BLOCKED",
-        error: "Patient consent is required before sending unencrypted PHI via email."
+        error: "Patient email consent is required before sending a secure summary link."
       });
 
       return Response.json(
         {
-          error: "Patient consent is required before sending unencrypted PHI via email.",
+          error: "Patient email consent is required before sending a secure summary link.",
           visit: result.visit,
           emailDeliveryLog: result.emailDeliveryLog
         },
@@ -55,15 +60,15 @@ export async function POST(
     }
 
     try {
-      const approvedSummary = visit.approvedSummary;
-      if (!approvedSummary) {
+      if (!visit.approvedSummary) {
         return badRequest("Approve the summary before sending email.");
       }
 
+      const summaryLink = await createPatientSummaryLinkForVisit({ visitId });
       const emailResult = await sendApprovedSummaryEmail({
-        patientName: visit.patient.name,
         recipient: visit.patient.email,
-        approvedSummary
+        summaryUrl: summaryLink.url,
+        expiresAt: summaryLink.expiresAt
       });
 
       const result = await recordEmailDelivery({

@@ -136,6 +136,13 @@ export function getAuthSecret() {
   throw new ServerConfigError("Authentication", ["AUTH_SECRET"]);
 }
 
+export function getAppBaseUrl() {
+  const appBaseUrl = readConfiguredServerEnv("APP_BASE_URL");
+  if (appBaseUrl) return appBaseUrl;
+
+  throw new ServerConfigError("Application base URL", ["APP_BASE_URL"]);
+}
+
 export function getDemoLoginEnabled() {
   const value = readServerEnv("ENABLE_DEMO_LOGIN").toLowerCase();
   return value === "true";

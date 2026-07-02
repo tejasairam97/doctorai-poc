@@ -15,10 +15,11 @@ model DoctorAccount {
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
-  visits            Visit[]
-  usageEvents       UsageEvent[]
-  progressSummaries PatientProgressSummary[]
-  emailDeliveryLogs EmailDeliveryLog[]
+  visits              Visit[]
+  usageEvents         UsageEvent[]
+  progressSummaries   PatientProgressSummary[]
+  emailDeliveryLogs   EmailDeliveryLog[]
+  patientSummaryLinks PatientSummaryLink[]
 
   @@map("doctor_accounts")
 }
@@ -62,10 +63,11 @@ model Visit {
   createdAt                     DateTime  @default(now()) @map("created_at")
   updatedAt                     DateTime  @updatedAt @map("updated_at")
 
-  doctor            DoctorAccount      @relation(fields: [doctorId], references: [id])
-  patient           Patient            @relation(fields: [patientId], references: [id])
-  usageEvents       UsageEvent[]
-  emailDeliveryLogs EmailDeliveryLog[]
+  doctor              DoctorAccount        @relation(fields: [doctorId], references: [id])
+  patient             Patient              @relation(fields: [patientId], references: [id])
+  usageEvents         UsageEvent[]
+  emailDeliveryLogs   EmailDeliveryLog[]
+  patientSummaryLinks PatientSummaryLink[]
 
   @@index([doctorId])
   @@index([doctorId, patientId])
@@ -172,4 +174,24 @@ model PatientSession {
   @@index([expiresAt])
   @@index([revokedAt])
   @@map("patient_sessions")
+}
+
+model PatientSummaryLink {
+  id                String    @id @default(cuid())
+  visitId           String    @map("visit_id")
+  patientEmail      String    @map("patient_email")
+  tokenHash         String    @unique @map("token_hash")
+  expiresAt         DateTime  @map("expires_at")
+  usedAt            DateTime? @map("used_at")
+  createdAt         DateTime  @default(now()) @map("created_at")
+  createdByDoctorId String    @map("created_by_doctor_id")
+
+  visit           Visit         @relation(fields: [visitId], references: [id])
+  createdByDoctor DoctorAccount @relation(fields: [createdByDoctorId], references: [id])
+
+  @@index([patientEmail])
+  @@index([visitId])
+  @@index([createdByDoctorId])
+  @@index([expiresAt])
+  @@map("patient_summary_links")
 }
