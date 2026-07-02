@@ -1,10 +1,21 @@
 import { getAzureOpenAIEnv } from "./server-config";
+import type { PatientProgressTrend } from "./types";
 
 const AZURE_OPENAI_API_VERSION = "2024-10-21";
 
 type SummaryResult = {
   summary: string;
   normalizedTranscript: string;
+  provider: "AZURE_OPENAI" | "LOCAL_PLACEHOLDER";
+  simulated: boolean;
+};
+
+type ProgressSummaryResult = {
+  trend: PatientProgressTrend;
+  summaryContent: string;
+  keyChangesSinceLastVisit: string[];
+  unresolvedIssues: string[];
+  followUpProgress: string[];
   provider: "AZURE_OPENAI" | "LOCAL_PLACEHOLDER";
   simulated: boolean;
 };
@@ -47,6 +58,24 @@ function buildNormalizationPrompt(inputModeActual: string) {
     "Use Patient: for patient statements and responses.",
     "If the speaker is ambiguous, preserve the text under the most likely label without adding explanation.",
     `Source mode: ${inputModeActual}.`
+  ].join("\n");
+}
+
+function buildProgressPrompt() {
+  return [
+    "You are DoctorAI, preparing a concise doctor-side outpatient progress summary.",
+    "Use only the supplied approved visit summaries. Do not use raw transcript, invent facts, or add new diagnoses.",
+    "Keep the output generic across specialties, clinical, concise, and doctor-reviewable.",
+    "Compare the latest approved visit with the immediately prior approved visit. Older visits may provide context only.",
+    "Return JSON only with this exact shape:",
+    "{",
+    "  \"trend\": \"improving\" | \"stable\" | \"worsening\" | \"unclear\",",
+    "  \"keyChangesSinceLastVisit\": [\"...\"],",
+    "  \"unresolvedIssues\": [\"...\"],",
+    "  \"followUpProgress\": [\"...\"]",
+    "}",
+    "Use \"unclear\" when the approved summaries do not support a direction of change.",
+    "Each array should contain 1 to 4 short clinical bullets. If not documented, say so plainly."
   ].join("\n");
 }
 
@@ -94,6 +123,88 @@ function localPlaceholderSummary(transcriptText: string, inputModeActual: string
   ].join("\n");
 }
 
+function cleanProgressLine(line: string) {
+  return line.replace(/^[-*]\s*/, "").trim();
+}
+
+function localProgressItems(summary: string, maxItems = 4) {
+  return summary
+    .split(/\r?\n+/)
+    .map(cleanProgressLine)
+    .filter(Boolean)
+    .filter((line) => !["Patient concern", "Key history from conversation", "Doctor assessment/plan", "Follow-up / instructions"].includes(line))
+    .slice(0, maxItems);
+}
+
+function localProgressTrend(latestSummary: string): PatientProgressTrend {
+  const text = latestSummary.toLowerCase();
+  const worsening = /\b(worse|worsening|deteriorat|increased|increasing|persistent|not improved|uncontrolled)\b/.test(text);
+  const improving = /\b(improv|better|resolved|decreased|decreasing|controlled|less frequent)\b/.test(text);
+  const stable = /\b(stable|unchanged|same as|no change)\b/.test(text);
+
+  if (worsening && !improving) return "worsening";
+  if (improving && !worsening) return "improving";
+  if (stable) return "stable";
+  return "unclear";
+}
+
+function buildProgressContent(input: {
+  trend: PatientProgressTrend;
+  keyChangesSinceLastVisit: string[];
+  unresolvedIssues: string[];
+  followUpProgress: string[];
+}) {
+  return [
+    `Trend: ${input.trend}`,
+    "",
+    "Key changes since last visit",
+    ...input.keyChangesSinceLastVisit.map((item) => `- ${item}`),
+    "",
+    "Unresolved issues",
+    ...input.unresolvedIssues.map((item) => `- ${item}`),
+    "",
+    "Follow-up progress",
+    ...input.followUpProgress.map((item) => `- ${item}`)
+  ].join("\n");
+}
+
+function localPlaceholderProgressSummary(approvedSummaries: Array<{ approvedSummary: string }>): ProgressSummaryResult {
+  const latestSummary = approvedSummaries[0]?.approvedSummary?.trim() || "";
+  const previousSummary = approvedSummaries[1]?.approvedSummary?.trim() || "";
+  const previousLower = previousSummary.toLowerCase();
+  const latestItems = localProgressItems(latestSummary, 8);
+  const keyChangesSinceLastVisit = latestItems
+    .filter((item) => !previousLower.includes(item.toLowerCase()))
+    .slice(0, 4);
+  const unresolvedIssues = latestItems
+    .filter((item) => /\b(pending|unresolved|continue|follow up|monitor|persistent|not documented|return|referral)\b/i.test(item))
+    .slice(0, 4);
+  const followUpProgress = latestItems
+    .filter((item) => /\b(follow|return|monitor|continue|instruction|progress|next)\b/i.test(item))
+    .slice(0, 4);
+  const trend = localProgressTrend(latestSummary);
+
+  const safeResult = {
+    trend,
+    keyChangesSinceLastVisit: keyChangesSinceLastVisit.length
+      ? keyChangesSinceLastVisit
+      : ["No clearly documented change was detected between the two latest approved summaries."],
+    unresolvedIssues: unresolvedIssues.length
+      ? unresolvedIssues
+      : ["No unresolved issue is clearly documented in the latest approved summary."],
+    followUpProgress: followUpProgress.length
+      ? followUpProgress
+      : ["No follow-up progress is clearly documented in the latest approved summary."]
+  };
+
+  return {
+    ...safeResult,
+    summaryContent: buildProgressContent(safeResult),
+    provider: "LOCAL_PLACEHOLDER",
+    simulated: true
+  };
+}
+
 export function getSummaryConfigStatus() {
   const env = getAzureOpenAIEnv();
   return {
@@ -114,7 +225,7 @@ async function requestChatCompletion(input: {
   userPrompt: string;
   temperature: number;
   maxTokens: number;
-  purpose: "normalization" | "summary";
+  purpose: "normalization" | "summary" | "progress summary";
 }) {
   const endpoint = `${normalizeEndpoint(input.endpoint)}/openai/deployments/${encodeURIComponent(
     input.deployment
@@ -150,6 +261,33 @@ async function requestChatCompletion(input: {
   }
 
   return content;
+}
+
+function parseJsonObject(content: string) {
+  const withoutFence = content
+    .replace(/^```(?:json)?\s*/i, "")
+    .replace(/```$/i, "")
+    .trim();
+  const firstBrace = withoutFence.indexOf("{");
+  const lastBrace = withoutFence.lastIndexOf("}");
+  const jsonText =
+    firstBrace >= 0 && lastBrace > firstBrace ? withoutFence.slice(firstBrace, lastBrace + 1) : withoutFence;
+  return JSON.parse(jsonText) as Record<string, unknown>;
+}
+
+function normalizeProgressArray(value: unknown, fallback: string) {
+  if (!Array.isArray(value)) return [fallback];
+  const items = value
+    .map((item) => (typeof item === "string" ? item.trim() : ""))
+    .filter(Boolean)
+    .slice(0, 4);
+  return items.length ? items : [fallback];
+}
+
+function normalizeProgressTrend(value: unknown): PatientProgressTrend {
+  return value === "improving" || value === "stable" || value === "worsening" || value === "unclear"
+    ? value
+    : "unclear";
 }
 
 export async function generateDraftSummary(input: {
@@ -200,4 +338,75 @@ export async function generateDraftSummary(input: {
     provider: "AZURE_OPENAI",
     simulated: false
   };
+}
+
+export async function generatePatientProgressSummary(input: {
+  approvedSummaries: Array<{
+    approvedAt?: string | Date | null;
+    approvedSummary: string;
+  }>;
+}): Promise<ProgressSummaryResult> {
+  const approvedSummaries = input.approvedSummaries
+    .map((summary) => ({
+      approvedAt: summary.approvedAt,
+      approvedSummary: summary.approvedSummary.trim()
+    }))
+    .filter((summary) => summary.approvedSummary);
+
+  if (approvedSummaries.length < 2) {
+    throw new Error("Progress Summary requires at least 2 approved visits.");
+  }
+
+  const fallback = localPlaceholderProgressSummary(approvedSummaries);
+  const env = getAzureOpenAIEnv();
+  if (!env.key || !env.endpoint || !env.deployment) {
+    return fallback;
+  }
+
+  try {
+    const content = await requestChatCompletion({
+      endpoint: env.endpoint,
+      key: env.key,
+      deployment: env.deployment,
+      systemPrompt: buildProgressPrompt(),
+      userPrompt: JSON.stringify({
+        source: "approved_visit_summaries_only",
+        visits: approvedSummaries.slice(0, 6).map((summary, index) => ({
+          sequence: index === 0 ? "latest" : index === 1 ? "previous" : `older_${index}`,
+          approvedAt: summary.approvedAt,
+          approvedSummary: summary.approvedSummary
+        }))
+      }),
+      temperature: 0.1,
+      maxTokens: 700,
+      purpose: "progress summary"
+    });
+
+    const parsed = parseJsonObject(content);
+    const normalized = {
+      trend: normalizeProgressTrend(parsed.trend),
+      keyChangesSinceLastVisit: normalizeProgressArray(
+        parsed.keyChangesSinceLastVisit,
+        "No clearly documented change was detected between the two latest approved summaries."
+      ),
+      unresolvedIssues: normalizeProgressArray(
+        parsed.unresolvedIssues,
+        "No unresolved issue is clearly documented in the latest approved summary."
+      ),
+      followUpProgress: normalizeProgressArray(
+        parsed.followUpProgress,
+        "No follow-up progress is clearly documented in the latest approved summary."
+      )
+    };
+
+    return {
+      ...normalized,
+      summaryContent: buildProgressContent(normalized),
+      provider: "AZURE_OPENAI",
+      simulated: false
+    };
+  } catch (error) {
+    console.warn("[DoctorAI progress summary Azure generation failed]", error);
+    return fallback;
+  }
 }

@@ -36,6 +36,37 @@ export type VisitWithPatient = Visit & {
   patient: Patient;
 };
 
+export type PatientHistoryVisit = VisitWithPatient & {
+  isCurrentVisit?: boolean;
+};
+
+export type PatientProgressTrend = "improving" | "stable" | "worsening" | "unclear";
+
+export type PatientProgressSummary = {
+  id?: string;
+  patientId?: string;
+  patientEmail?: string;
+  trend: PatientProgressTrend;
+  approvedVisitCount: number;
+  summaryContent: string;
+  latestApprovedAt?: string | Date | null;
+  previousApprovedAt?: string | Date | null;
+  generatedAt?: string | Date | null;
+  updatedAt?: string | Date | null;
+  keyChangesSinceLastVisit: string[];
+  unresolvedIssues: string[];
+  followUpProgress: string[];
+};
+
+export type PatientHistoryResponse = {
+  patientEmail: string;
+  totalVisitCount: number;
+  priorVisitCount: number;
+  approvedVisitCount: number;
+  visits: PatientHistoryVisit[];
+  progressSummary?: PatientProgressSummary | null;
+};
+
 export type UsageEvent = {
   id: string;
   doctorId: string;
