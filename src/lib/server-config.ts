@@ -129,6 +129,13 @@ export function getDatabaseUrl() {
   throw new ServerConfigError("Database", ["DATABASE_URL"]);
 }
 
+export function getAuthSecret() {
+  const authSecret = readConfiguredServerEnv("AUTH_SECRET");
+  if (authSecret) return authSecret;
+
+  throw new ServerConfigError("Authentication", ["AUTH_SECRET"]);
+}
+
 export function getDemoLoginEnabled() {
   const value = readServerEnv("ENABLE_DEMO_LOGIN").toLowerCase();
   return value === "true";

@@ -1,5 +1,23 @@
 import { createHash } from "crypto";
 import { generatePatientProgressSummary } from "./azure-openai";
+import {
+  generateOtpCode,
+  generatePatientSessionToken,
+  hashOtpCode,
+  hashPatientSessionToken,
+  normalizeOtpEmail,
+  OTP_EMAIL_COOLDOWN_SECONDS,
+  OTP_EXPIRES_IN_MINUTES,
+  OTP_MAX_ATTEMPTS,
+  OTP_MAX_EMAIL_REQUESTS_PER_WINDOW,
+  OTP_MAX_IP_REQUESTS_PER_WINDOW,
+  OTP_RATE_LIMIT_WINDOW_MINUTES,
+  PATIENT_SESSION_EXPIRES_IN_DAYS,
+  purposeForRoleContext,
+  verifyHash,
+  type OtpPurpose,
+  type OtpRoleContext
+} from "./otp";
 import { prisma } from "./prisma";
 import { getDemoLoginEnabled } from "./server-config";
 import { actualModeForConsent, type ConsentStatus, type InputMode } from "./status";
@@ -8,6 +26,9 @@ import type {
   PatientProgressConfidence,
   PatientProgressSummary,
   PatientProgressTrend,
+  PatientPortalProgressGroup,
+  PatientPortalVisit,
+  PatientSession,
   VisitWithPatient
 } from "./types";
 
@@ -179,6 +200,197 @@ export async function getDoctorById(doctorId: string) {
   });
 }
 
+function publicPatientSession(session: {
+  id: string;
+  email: string;
+  expiresAt: Date;
+  createdAt: Date;
+}): PatientSession {
+  return {
+    email: session.email,
+    expiresAt: session.expiresAt,
+    createdAt: session.createdAt
+  };
+}
+
+function patientSessionExpiresAt() {
+  return new Date(Date.now() + PATIENT_SESSION_EXPIRES_IN_DAYS * 24 * 60 * 60 * 1000);
+}
+
+export async function createLoginOtpChallenge(input: {
+  email: string;
+  roleContext: OtpRoleContext;
+  purpose?: OtpPurpose;
+  requestIp?: string | null;
+  userAgent?: string | null;
+}) {
+  const normalizedEmail = normalizeOtpEmail(input.email);
+  const purpose = input.purpose ?? purposeForRoleContext(input.roleContext);
+  const now = new Date();
+  const cooldownSince = new Date(now.getTime() - OTP_EMAIL_COOLDOWN_SECONDS * 1000);
+  const rateLimitSince = new Date(now.getTime() - OTP_RATE_LIMIT_WINDOW_MINUTES * 60 * 1000);
+  const requestIp = input.requestIp?.trim() || null;
+
+  const [recentEmailOtp, emailRequestCount, ipRequestCount] = await Promise.all([
+    prisma.loginOtp.findFirst({
+      where: {
+        email: normalizedEmail,
+        roleContext: input.roleContext,
+        purpose,
+        createdAt: { gte: cooldownSince }
+      },
+      select: { id: true }
+    }),
+    prisma.loginOtp.count({
+      where: {
+        email: normalizedEmail,
+        roleContext: input.roleContext,
+        purpose,
+        createdAt: { gte: rateLimitSince }
+      }
+    }),
+    requestIp
+      ? prisma.loginOtp.count({
+          where: {
+            requestIp,
+            createdAt: { gte: rateLimitSince }
+          }
+        })
+      : Promise.resolve(0)
+  ]);
+
+  const rateLimited =
+    Boolean(recentEmailOtp) ||
+    emailRequestCount >= OTP_MAX_EMAIL_REQUESTS_PER_WINDOW ||
+    ipRequestCount >= OTP_MAX_IP_REQUESTS_PER_WINDOW;
+
+  if (rateLimited) {
+    return { code: null, expiresAt: null, rateLimited: true };
+  }
+
+  const code = generateOtpCode();
+  const expiresAt = new Date(now.getTime() + OTP_EXPIRES_IN_MINUTES * 60 * 1000);
+
+  await prisma.loginOtp.create({
+    data: {
+      email: normalizedEmail,
+      roleContext: input.roleContext,
+      purpose,
+      codeHash: hashOtpCode({
+        email: normalizedEmail,
+        roleContext: input.roleContext,
+        purpose,
+        code
+      }),
+      expiresAt,
+      maxAttempts: OTP_MAX_ATTEMPTS,
+      requestIp,
+      userAgent: input.userAgent?.slice(0, 500) || null
+    }
+  });
+
+  return { code, expiresAt, rateLimited: false };
+}
+
+export async function verifyLoginOtp(input: {
+  email: string;
+  roleContext: OtpRoleContext;
+  purpose?: OtpPurpose;
+  code: string;
+}) {
+  const normalizedEmail = normalizeOtpEmail(input.email);
+  const purpose = input.purpose ?? purposeForRoleContext(input.roleContext);
+  const now = new Date();
+  const loginOtp = await prisma.loginOtp.findFirst({
+    where: {
+      email: normalizedEmail,
+      roleContext: input.roleContext,
+      purpose,
+      consumedAt: null
+    },
+    orderBy: { createdAt: "desc" }
+  });
+
+  if (!loginOtp || loginOtp.expiresAt <= now || loginOtp.attemptCount >= loginOtp.maxAttempts) {
+    return { verified: false as const, patientSession: null, patientSessionToken: null };
+  }
+
+  const candidateHash = hashOtpCode({
+    email: normalizedEmail,
+    roleContext: input.roleContext,
+    purpose,
+    code: input.code
+  });
+
+  if (!verifyHash(candidateHash, loginOtp.codeHash)) {
+    await prisma.loginOtp.update({
+      where: { id: loginOtp.id },
+      data: { attemptCount: { increment: 1 } }
+    });
+    return { verified: false as const, patientSession: null, patientSessionToken: null };
+  }
+
+  return prisma.$transaction(async (tx) => {
+    await tx.loginOtp.update({
+      where: { id: loginOtp.id },
+      data: {
+        consumedAt: now,
+        attemptCount: { increment: 1 }
+      }
+    });
+
+    if (input.roleContext !== "patient") {
+      return { verified: true as const, patientSession: null, patientSessionToken: null };
+    }
+
+    const patientSessionToken = generatePatientSessionToken();
+    const patientSession = await tx.patientSession.create({
+      data: {
+        email: normalizedEmail,
+        sessionTokenHash: hashPatientSessionToken(patientSessionToken),
+        expiresAt: patientSessionExpiresAt()
+      }
+    });
+
+    return {
+      verified: true as const,
+      patientSession: publicPatientSession(patientSession),
+      patientSessionToken
+    };
+  });
+}
+
+export async function getPatientSessionByToken(token: string | undefined | null) {
+  if (!token) return null;
+
+  const now = new Date();
+  const session = await prisma.patientSession.findUnique({
+    where: { sessionTokenHash: hashPatientSessionToken(token) }
+  });
+
+  if (!session || session.revokedAt || session.expiresAt <= now) {
+    return null;
+  }
+
+  const updatedSession = await prisma.patientSession.update({
+    where: { id: session.id },
+    data: { lastSeenAt: now }
+  });
+
+  return publicPatientSession(updatedSession);
+}
+
+export async function revokePatientSessionByToken(token: string | undefined | null) {
+  if (!token) return;
+
+  await prisma.patientSession
+    .update({
+      where: { sessionTokenHash: hashPatientSessionToken(token) },
+      data: { revokedAt: new Date() }
+    })
+    .catch(() => undefined);
+}
+
 export async function createDraftVisit(input: {
   doctorId: string;
   patient: { name: string; age: number; email: string; phone?: string };
@@ -254,6 +466,105 @@ export async function listVisits(doctorId: string) {
     include: { patient: true },
     orderBy: { createdAt: "desc" }
   });
+}
+
+export async function listPatientPortalApprovedVisits(email: string): Promise<PatientPortalVisit[]> {
+  const normalizedPatientEmail = normalizeOtpEmail(email);
+  const visits = await prisma.visit.findMany({
+    where: {
+      approvedSummary: { not: null },
+      patient: {
+        is: { email: normalizedPatientEmail }
+      }
+    },
+    select: {
+      id: true,
+      approvedSummary: true,
+      approvedAt: true,
+      createdAt: true,
+      patient: {
+        select: {
+          name: true,
+          age: true
+        }
+      },
+      doctor: {
+        select: {
+          id: true,
+          name: true,
+          email: true
+        }
+      }
+    },
+    orderBy: [{ approvedAt: "desc" }, { createdAt: "desc" }]
+  });
+
+  return visits
+    .filter((visit) => Boolean(visit.approvedSummary?.trim()))
+    .map((visit) => ({
+      id: visit.id,
+      doctor: visit.doctor,
+      patientName: visit.patient.name,
+      patientAge: visit.patient.age,
+      approvedSummary: visit.approvedSummary || "",
+      approvedAt: visit.approvedAt,
+      createdAt: visit.createdAt
+    }));
+}
+
+export async function listPatientPortalProgress(email: string): Promise<PatientPortalProgressGroup[]> {
+  const normalizedPatientEmail = normalizeOtpEmail(email);
+  const approvedVisits = await prisma.visit.findMany({
+    where: {
+      approvedSummary: { not: null },
+      patient: {
+        is: { email: normalizedPatientEmail }
+      }
+    },
+    include: {
+      patient: true,
+      doctor: {
+        select: {
+          id: true,
+          name: true,
+          email: true
+        }
+      }
+    },
+    orderBy: [{ doctorId: "asc" }, { approvedAt: "desc" }, { createdAt: "desc" }]
+  });
+
+  const visitsByDoctor = new Map<string, typeof approvedVisits>();
+  for (const visit of approvedVisits.filter((visit) => Boolean(visit.approvedSummary?.trim()))) {
+    const existing = visitsByDoctor.get(visit.doctorId) || [];
+    existing.push(visit);
+    visitsByDoctor.set(visit.doctorId, existing);
+  }
+
+  const progressGroups: PatientPortalProgressGroup[] = [];
+  for (const [doctorId, doctorVisits] of visitsByDoctor.entries()) {
+    if (doctorVisits.length < 2) continue;
+
+    const progressSummary = await generateOrUpdatePatientProgressSummaryForDoctor({
+      doctorId,
+      patientEmail: normalizedPatientEmail
+    });
+
+    if (!progressSummary) continue;
+
+    progressGroups.push({
+      doctor: doctorVisits[0].doctor,
+      approvedVisitCount: progressSummary.approvedVisitCount,
+      trend: progressSummary.trend,
+      confidence: progressSummary.confidence,
+      generatedAt: progressSummary.generatedAt,
+      keyChangesSinceLastVisit: progressSummary.keyChangesSinceLastVisit,
+      unresolvedIssues: progressSummary.unresolvedIssues,
+      followUpProgress: progressSummary.followUpProgress
+    });
+  }
+
+  return progressGroups;
 }
 
 async function listDoctorPatientVisitsByEmail(doctorId: string, patientEmail: string) {
@@ -696,9 +1007,19 @@ export async function recordEmailDelivery(input: {
   error?: string;
 }) {
   return prisma.$transaction(async (tx) => {
+    const existingVisit = await tx.visit.findUnique({
+      where: { id: input.visitId },
+      select: { status: true, doctorId: true }
+    });
+
+    if (!existingVisit) {
+      throw new Error("Visit not found.");
+    }
+
     const emailDeliveryLog = await tx.emailDeliveryLog.create({
       data: {
         visitId: input.visitId,
+        doctorId: existingVisit.doctorId,
         recipient: input.recipient,
         status: input.status,
         providerId: input.providerId ?? null,
@@ -706,10 +1027,6 @@ export async function recordEmailDelivery(input: {
       }
     });
 
-    const existingVisit = await tx.visit.findUnique({
-      where: { id: input.visitId },
-      select: { status: true }
-    });
     const emailSucceeded = input.status === "SENT" || input.status === "SIMULATED";
     const emailBlocked = input.status === "BLOCKED";
     const visit = await tx.visit.update({
@@ -735,6 +1052,51 @@ export async function recordEmailDelivery(input: {
     });
 
     return { visit, emailDeliveryLog };
+  });
+}
+
+export async function recordDoctorEmailDelivery(input: {
+  doctorId: string;
+  recipient: string;
+  status: string;
+  providerId?: string;
+  error?: string;
+}) {
+  return prisma.$transaction(async (tx) => {
+    const doctor = await tx.doctorAccount.findUnique({
+      where: { id: input.doctorId },
+      select: { id: true, name: true, email: true }
+    });
+
+    if (!doctor) {
+      throw new Error("Doctor not found.");
+    }
+
+    const emailDeliveryLog = await tx.emailDeliveryLog.create({
+      data: {
+        doctorId: doctor.id,
+        visitId: null,
+        recipient: input.recipient,
+        status: input.status,
+        providerId: input.providerId ?? null,
+        error: input.error ?? null
+      }
+    });
+
+    await tx.usageEvent.create({
+      data: {
+        doctorId: doctor.id,
+        visitId: null,
+        type: "DOCTOR_TEST_EMAIL_DELIVERY",
+        metadata: JSON.stringify({
+          status: input.status,
+          providerId: input.providerId,
+          error: input.error
+        })
+      }
+    });
+
+    return { doctor, emailDeliveryLog };
   });
 }
 

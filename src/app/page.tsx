@@ -24,7 +24,15 @@ import {
 } from "lucide-react";
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CONSENT_STATUSES, INPUT_MODES, labelFromCode, type ConsentStatus, type InputMode } from "@/lib/status";
-import type { EmailDeliveryLog, PatientHistoryResponse, UsageEvent, VisitWithPatient } from "@/lib/types";
+import type {
+  EmailDeliveryLog,
+  PatientHistoryResponse,
+  PatientPortalProgressGroup,
+  PatientPortalVisit,
+  PatientSession,
+  UsageEvent,
+  VisitWithPatient
+} from "@/lib/types";
 
 type PublicDoctor = {
   id: string;
@@ -60,6 +68,25 @@ type EmailResponse = {
   emailError?: string;
 };
 
+type EmailTestResponse = {
+  emailDeliveryLog: EmailDeliveryLog;
+  emailSimulated?: boolean;
+  acsConfigured: boolean;
+  emailError?: string;
+};
+
+type PatientSessionResponse = {
+  patientSession: PatientSession | null;
+};
+
+type PatientVisitsResponse = {
+  visits: PatientPortalVisit[];
+};
+
+type PatientProgressResponse = {
+  progress: PatientPortalProgressGroup[];
+};
+
 type RuntimeConfigResponse = {
   demoLogin: {
     enabled: boolean;
@@ -70,6 +97,9 @@ type RuntimeConfigResponse = {
 
 type EmailConsentStatus = "APPROVED" | "DECLINED" | "NOT_ASKED";
 type PatientHistoryTab = "VISIT_HISTORY" | "PROGRESS_SUMMARY";
+type PublicAccessMode = "doctor" | "patient";
+type PatientOtpStep = "EMAIL" | "CODE";
+type PatientPortalTab = "VISITS" | "PROGRESS";
 
 type AzureRecognizer = {
   recognizing?: (sender: unknown, event: { result?: { text?: string } }) => void;
@@ -574,8 +604,19 @@ export default function Home() {
   const [runtimeConfig, setRuntimeConfig] = useState<RuntimeConfigResponse>({
     demoLogin: { enabled: false }
   });
+  const [publicAccessMode, setPublicAccessMode] = useState<PublicAccessMode>("doctor");
   const [authMode, setAuthMode] = useState<"signup" | "login">("signup");
   const [authForm, setAuthForm] = useState({ name: "", email: "", password: "" });
+  const [patientSession, setPatientSession] = useState<PatientSession | null>(null);
+  const [patientOtpStep, setPatientOtpStep] = useState<PatientOtpStep>("EMAIL");
+  const [patientEmail, setPatientEmail] = useState("");
+  const [patientOtpCode, setPatientOtpCode] = useState("");
+  const [patientPortalTab, setPatientPortalTab] = useState<PatientPortalTab>("VISITS");
+  const [patientPortalVisits, setPatientPortalVisits] = useState<PatientPortalVisit[]>([]);
+  const [patientPortalProgress, setPatientPortalProgress] = useState<PatientPortalProgressGroup[]>([]);
+  const [isLoadingPatientPortal, setIsLoadingPatientPortal] = useState(false);
+  const [patientMessage, setPatientMessage] = useState("");
+  const [patientError, setPatientError] = useState("");
   const [visitForm, setVisitForm] = useState(emptyVisitForm);
   const [visits, setVisits] = useState<VisitWithPatient[]>([]);
   const [activeVisit, setActiveVisit] = useState<VisitWithPatient | null>(null);
@@ -587,6 +628,7 @@ export default function Home() {
   const [summaryState, setSummaryState] = useState<SummaryState>("idle");
   const [summaryMessage, setSummaryMessage] = useState("");
   const [emailMessage, setEmailMessage] = useState("");
+  const [testEmailMessage, setTestEmailMessage] = useState("");
   const [unencryptedEmailConsentStatus, setUnencryptedEmailConsentStatus] =
     useState<EmailConsentStatus>("NOT_ASKED");
   const [usageEvents, setUsageEvents] = useState<UsageEvent[]>([]);
@@ -603,6 +645,7 @@ export default function Home() {
   const [isLoadingActiveVisitHistory, setIsLoadingActiveVisitHistory] = useState(false);
   const [activeVisitHistoryError, setActiveVisitHistoryError] = useState("");
   const [isBusy, setIsBusy] = useState(false);
+  const [isSendingTestEmail, setIsSendingTestEmail] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
   const [micState, setMicState] = useState<MicState>("idle");
   const [micError, setMicError] = useState("");
@@ -675,6 +718,20 @@ export default function Home() {
     [doctor]
   );
 
+  const loadPatientPortalData = useCallback(async () => {
+    setIsLoadingPatientPortal(true);
+    try {
+      const [visitsResult, progressResult] = await Promise.all([
+        api<PatientVisitsResponse>("/api/patient/visits"),
+        api<PatientProgressResponse>("/api/patient/progress")
+      ]);
+      setPatientPortalVisits(visitsResult.visits);
+      setPatientPortalProgress(progressResult.progress);
+    } finally {
+      setIsLoadingPatientPortal(false);
+    }
+  }, []);
+
   useEffect(() => {
     setIsOnline(navigator.onLine);
     void clearDevelopmentPwaState();
@@ -699,6 +756,29 @@ export default function Home() {
       setError("Please log in again.");
     });
   }, [loadVisits]);
+
+  useEffect(() => {
+    api<PatientSessionResponse>("/api/patient/session")
+      .then((result) => {
+        if (!result.patientSession) return;
+        setPatientSession(result.patientSession);
+        setPatientEmail(result.patientSession.email);
+        setPublicAccessMode("patient");
+      })
+      .catch(() => undefined);
+  }, []);
+
+  useEffect(() => {
+    if (!patientSession) {
+      setPatientPortalVisits([]);
+      setPatientPortalProgress([]);
+      return;
+    }
+
+    loadPatientPortalData().catch((portalError) => {
+      setPatientError(portalError instanceof Error ? portalError.message : "Patient portal failed to load.");
+    });
+  }, [loadPatientPortalData, patientSession]);
 
   useEffect(() => {
     if (!doctor || !showNewVisit) {
@@ -1174,6 +1254,123 @@ export default function Home() {
     }
   }
 
+  async function sendTestEmailToSelf() {
+    if (!doctor) return;
+
+    setIsSendingTestEmail(true);
+    setTestEmailMessage("");
+    setError("");
+
+    try {
+      const result = await api<EmailTestResponse>("/api/email-test", {
+        method: "POST",
+        body: JSON.stringify({ doctorId: doctor.id })
+      });
+
+      if (result.emailError) {
+        setTestEmailMessage(result.emailError);
+      } else if (!result.acsConfigured || result.emailSimulated) {
+        setTestEmailMessage("ACS not configured. Test email was logged as simulated.");
+      } else {
+        setTestEmailMessage("Test email sent to your doctor email.");
+      }
+
+      if (showUsage) await loadUsage();
+    } catch (testEmailError) {
+      setTestEmailMessage(testEmailError instanceof Error ? testEmailError.message : "Email failed.");
+    } finally {
+      setIsSendingTestEmail(false);
+    }
+  }
+
+  async function requestPatientOtp(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const normalizedEmail = patientEmail.trim().toLowerCase();
+    if (!normalizedEmail.includes("@")) {
+      setPatientError("Enter a valid email.");
+      return;
+    }
+
+    setIsBusy(true);
+    setPatientError("");
+    setPatientMessage("");
+
+    try {
+      await api<{ ok: boolean; message: string }>("/api/otp/request", {
+        method: "POST",
+        body: JSON.stringify({
+          email: normalizedEmail,
+          role_context: "patient"
+        })
+      });
+      setPatientEmail(normalizedEmail);
+      setPatientOtpStep("CODE");
+      setPatientMessage("If that email has access, a verification code has been sent.");
+    } catch (otpError) {
+      setPatientError(otpError instanceof Error ? otpError.message : "Unable to request verification code.");
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
+  async function verifyPatientOtp(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const normalizedEmail = patientEmail.trim().toLowerCase();
+    const code = patientOtpCode.trim();
+    if (!/^\d{6}$/.test(code)) {
+      setPatientError("Enter the 6-digit code.");
+      return;
+    }
+
+    setIsBusy(true);
+    setPatientError("");
+    setPatientMessage("");
+
+    try {
+      const result = await api<{ verified: boolean; patientSession: PatientSession | null }>("/api/otp/verify", {
+        method: "POST",
+        body: JSON.stringify({
+          email: normalizedEmail,
+          role_context: "patient",
+          code
+        })
+      });
+
+      if (!result.patientSession) {
+        throw new Error("Patient session was not created.");
+      }
+
+      setPatientSession(result.patientSession);
+      setPatientOtpCode("");
+      setPatientMessage("Patient access verified.");
+      await loadPatientPortalData();
+    } catch (otpError) {
+      setPatientError(otpError instanceof Error ? otpError.message : "Verification failed.");
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
+  async function logoutPatient() {
+    setIsBusy(true);
+    setPatientError("");
+    setPatientMessage("");
+
+    try {
+      await api<{ ok: boolean }>("/api/patient/logout", { method: "POST" });
+      setPatientSession(null);
+      setPatientOtpStep("EMAIL");
+      setPatientOtpCode("");
+      setPatientPortalVisits([]);
+      setPatientPortalProgress([]);
+      setPatientMessage("Signed out.");
+    } catch (logoutError) {
+      setPatientError(logoutError instanceof Error ? logoutError.message : "Sign out failed.");
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
   async function startRecording() {
     const visit = activeVisitRef.current;
     const mode = activeModeRef.current;
@@ -1347,7 +1544,7 @@ export default function Home() {
 
   if (!doctor) {
     return (
-      <main className="mx-auto flex min-h-screen w-full max-w-md flex-col justify-center px-5 py-8">
+      <main className="mx-auto flex min-h-screen w-full max-w-3xl flex-col justify-center px-5 py-8">
         <section className="space-y-7">
           <div className="space-y-3">
             <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-moss text-white">
@@ -1359,6 +1556,29 @@ export default function Home() {
             </div>
           </div>
 
+          <div className="grid grid-cols-2 gap-2 rounded-lg bg-white p-1 shadow-soft">
+            {(["doctor", "patient"] as const).map((mode) => (
+              <button
+                key={mode}
+                type="button"
+                onClick={() => {
+                  setPublicAccessMode(mode);
+                  setError("");
+                  setNotice("");
+                  setPatientError("");
+                  setPatientMessage("");
+                }}
+                className={`h-11 rounded-md text-sm font-semibold ${
+                  publicAccessMode === mode ? "bg-moss text-white" : "text-ink"
+                }`}
+              >
+                {mode === "doctor" ? "Doctor Access" : "Patient Access"}
+              </button>
+            ))}
+          </div>
+
+          {publicAccessMode === "doctor" ? (
+            <>
           <div className="grid grid-cols-2 gap-2 rounded-lg bg-white p-1 shadow-soft">
             {(["signup", "login"] as const).map((mode) => (
               <button
@@ -1435,6 +1655,227 @@ export default function Home() {
               {authMode === "signup" ? "Create account" : "Enter app"}
             </button>
           </form>
+            </>
+          ) : (
+            <div className="rounded-lg bg-white p-4 shadow-soft">
+              {!patientSession ? (
+                <div className="space-y-4">
+                  <div>
+                    <h2 className="text-xl font-bold text-ink">Patient Access</h2>
+                    <p className="mt-1 text-sm font-semibold text-ink/65">
+                      View approved visit summaries using the email shared with your doctor.
+                    </p>
+                  </div>
+
+                  {patientOtpStep === "EMAIL" ? (
+                    <form onSubmit={requestPatientOtp} className="space-y-4">
+                      <label className="block text-sm font-semibold text-ink">
+                        Email
+                        <input
+                          required
+                          type="email"
+                          value={patientEmail}
+                          onChange={(event) => setPatientEmail(event.target.value)}
+                          className="mt-2 h-12 w-full rounded-lg border border-mint bg-white px-3 outline-none focus:border-moss"
+                        />
+                      </label>
+                      <button
+                        disabled={isBusy}
+                        className="flex h-12 w-full items-center justify-center gap-2 rounded-lg bg-moss font-semibold text-white"
+                      >
+                        <Mail size={18} aria-hidden="true" />
+                        Send code
+                      </button>
+                    </form>
+                  ) : (
+                    <form onSubmit={verifyPatientOtp} className="space-y-4">
+                      <label className="block text-sm font-semibold text-ink">
+                        Verification code
+                        <input
+                          required
+                          inputMode="numeric"
+                          maxLength={6}
+                          pattern="[0-9]{6}"
+                          value={patientOtpCode}
+                          onChange={(event) => setPatientOtpCode(event.target.value.replace(/\D/g, "").slice(0, 6))}
+                          className="mt-2 h-12 w-full rounded-lg border border-mint bg-white px-3 text-center text-lg font-bold tracking-[0.25em] outline-none focus:border-moss"
+                        />
+                      </label>
+                      <button
+                        disabled={isBusy}
+                        className="flex h-12 w-full items-center justify-center gap-2 rounded-lg bg-moss font-semibold text-white"
+                      >
+                        <LogIn size={18} aria-hidden="true" />
+                        Verify
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setPatientOtpStep("EMAIL");
+                          setPatientOtpCode("");
+                          setPatientMessage("");
+                          setPatientError("");
+                        }}
+                        className="h-11 w-full rounded-lg border border-mint bg-white text-sm font-bold text-ink"
+                      >
+                        Use a different email
+                      </button>
+                    </form>
+                  )}
+
+                  {patientError && (
+                    <p className="rounded-lg bg-coral px-3 py-2 text-sm font-semibold text-white">{patientError}</p>
+                  )}
+                  {patientMessage && (
+                    <p className="rounded-lg bg-mint px-3 py-2 text-sm font-semibold text-ink">{patientMessage}</p>
+                  )}
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <p className="text-sm font-semibold text-moss">Patient portal</p>
+                      <h2 className="text-2xl font-bold text-ink">Approved summaries</h2>
+                      <p className="mt-1 break-all text-xs font-semibold text-ink/65">{patientSession.email}</p>
+                    </div>
+                    <button
+                      type="button"
+                      disabled={isBusy}
+                      onClick={() => logoutPatient().catch((logoutError) => setPatientError(logoutError.message))}
+                      className="h-10 rounded-lg border border-mint bg-white px-3 text-sm font-semibold text-ink"
+                    >
+                      Logout
+                    </button>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2 rounded-lg bg-clinic p-1">
+                    <button
+                      type="button"
+                      onClick={() => setPatientPortalTab("VISITS")}
+                      className={`h-10 rounded-md text-sm font-bold ${
+                        patientPortalTab === "VISITS" ? "bg-white text-moss shadow-soft" : "text-ink"
+                      }`}
+                    >
+                      My Visits
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setPatientPortalTab("PROGRESS")}
+                      className={`h-10 rounded-md text-sm font-bold ${
+                        patientPortalTab === "PROGRESS" ? "bg-white text-moss shadow-soft" : "text-ink"
+                      }`}
+                    >
+                      My Progress
+                    </button>
+                  </div>
+
+                  {patientError && (
+                    <p className="rounded-lg bg-coral px-3 py-2 text-sm font-semibold text-white">{patientError}</p>
+                  )}
+                  {patientMessage && (
+                    <p className="rounded-lg bg-mint px-3 py-2 text-sm font-semibold text-ink">{patientMessage}</p>
+                  )}
+
+                  {isLoadingPatientPortal ? (
+                    <p className="rounded-lg bg-clinic px-3 py-2 text-sm font-semibold text-ink">Loading portal.</p>
+                  ) : patientPortalTab === "VISITS" ? (
+                    <div className="space-y-3">
+                      {patientPortalVisits.length === 0 ? (
+                        <p className="rounded-lg bg-clinic px-3 py-3 text-sm font-semibold text-ink">
+                          No approved visits yet.
+                        </p>
+                      ) : (
+                        patientPortalVisits.map((visit) => {
+                          const followUp = extractSummarySection(visit.approvedSummary, "Follow-up / instructions");
+                          return (
+                            <div key={visit.id} className="rounded-lg border border-mint bg-clinic p-3">
+                              <div className="flex flex-wrap items-start justify-between gap-2">
+                                <div>
+                                  <p className="text-sm font-bold text-ink">{formatTimestamp(visit.approvedAt || visit.createdAt)}</p>
+                                  <p className="mt-1 text-xs font-semibold text-ink/65">
+                                    {visit.doctor.name} - {visit.doctor.email}
+                                  </p>
+                                </div>
+                                <StatusChip status="APPROVED" />
+                              </div>
+                              <div className="mt-3">
+                                <p className="text-xs font-bold uppercase text-moss">Approved summary</p>
+                                <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed text-ink">
+                                  {visit.approvedSummary}
+                                </p>
+                              </div>
+                              {followUp && (
+                                <div className="mt-3 rounded-lg bg-white p-3">
+                                  <p className="text-xs font-bold uppercase text-moss">Follow-up / instructions</p>
+                                  <p className="mt-1 text-sm leading-relaxed text-ink/80">{followUp}</p>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })
+                      )}
+                    </div>
+                  ) : (
+                    <div className="space-y-3">
+                      {patientPortalProgress.length === 0 ? (
+                        <p className="rounded-lg bg-clinic px-3 py-3 text-sm font-semibold text-ink">
+                          My Progress appears after at least 2 approved visits with the same doctor.
+                        </p>
+                      ) : (
+                        patientPortalProgress.map((progress) => (
+                          <div key={progress.doctor.id} className="rounded-lg border border-mint bg-clinic p-3">
+                            <div className="flex flex-wrap items-start justify-between gap-2">
+                              <div>
+                                <p className="text-sm font-bold text-ink">{progress.doctor.name}</p>
+                                <p className="mt-1 text-xs font-semibold text-ink/65">{progress.doctor.email}</p>
+                                <p className="mt-1 text-xs font-semibold text-ink/65">
+                                  {progress.approvedVisitCount} approved visits
+                                </p>
+                              </div>
+                              <span className={`rounded-md px-2 py-1 text-xs font-bold ${trendTone(progress.trend)}`}>
+                                {labelFromCode(progress.trend)}
+                              </span>
+                            </div>
+
+                            {[
+                              ["What changed since last visit", progress.keyChangesSinceLastVisit],
+                              ["Unresolved concerns", progress.unresolvedIssues],
+                              ["Follow-up reminders", progress.followUpProgress]
+                            ].map(([title, items]) => (
+                              <div key={title as string} className="mt-3">
+                                <p className="text-xs font-bold uppercase text-moss">{title as string}</p>
+                                <div className="mt-2 space-y-1">
+                                  {(items as string[]).length > 0 ? (
+                                    (items as string[]).map((item) => (
+                                      <p key={item} className="rounded-lg bg-white px-3 py-2 text-sm leading-relaxed text-ink/80">
+                                        {item}
+                                      </p>
+                                    ))
+                                  ) : (
+                                    <p className="rounded-lg bg-white px-3 py-2 text-sm leading-relaxed text-ink/70">
+                                      Not clearly documented in approved summaries.
+                                    </p>
+                                  )}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  )}
+
+                  <button
+                    type="button"
+                    onClick={() => loadPatientPortalData().catch((portalError) => setPatientError(portalError.message))}
+                    className="h-10 w-full rounded-lg border border-mint bg-white text-sm font-bold text-ink"
+                  >
+                    Refresh
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
         </section>
       </main>
     );
@@ -1532,6 +1973,31 @@ export default function Home() {
                 New Visit
               </button>
             </div>
+          </div>
+
+          <div className="rounded-lg bg-white p-4 shadow-soft">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <p className="text-sm font-bold text-moss">Email settings</p>
+                <p className="mt-1 break-all text-xs text-ink/65">
+                  Send a test email only to {doctor.email}.
+                </p>
+              </div>
+              <button
+                type="button"
+                disabled={isSendingTestEmail}
+                onClick={() => sendTestEmailToSelf().catch((testEmailError) => setError(testEmailError.message))}
+                className="flex h-10 items-center gap-2 rounded-lg border border-mint bg-white px-3 text-xs font-bold text-ink disabled:opacity-60"
+              >
+                <Mail size={15} aria-hidden="true" />
+                {isSendingTestEmail ? "Sending" : "Send test"}
+              </button>
+            </div>
+            {testEmailMessage && (
+              <p className="mt-3 rounded-lg bg-clinic px-3 py-2 text-sm font-semibold text-ink">
+                {testEmailMessage}
+              </p>
+            )}
           </div>
 
           {showNewVisit && (

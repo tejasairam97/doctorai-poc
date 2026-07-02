@@ -90,10 +90,47 @@ export type UsageEvent = {
 
 export type EmailDeliveryLog = {
   id: string;
-  visitId: string;
+  visitId?: string | null;
+  doctorId?: string | null;
   recipient: string;
   status: string;
   providerId?: string | null;
   error?: string | null;
   createdAt: string | Date;
+};
+
+export type PatientSession = {
+  id?: string;
+  email: string;
+  expiresAt: string | Date;
+  createdAt: string | Date;
+};
+
+export type PatientPortalVisit = {
+  id: string;
+  doctor: {
+    id: string;
+    name: string;
+    email: string;
+  };
+  patientName: string;
+  patientAge: number;
+  approvedSummary: string;
+  approvedAt?: string | Date | null;
+  createdAt: string | Date;
+};
+
+export type PatientPortalProgressGroup = {
+  doctor: {
+    id: string;
+    name: string;
+    email: string;
+  };
+  approvedVisitCount: number;
+  trend: PatientProgressTrend;
+  confidence: PatientProgressConfidence;
+  generatedAt?: string | Date | null;
+  keyChangesSinceLastVisit: string[];
+  unresolvedIssues: string[];
+  followUpProgress: string[];
 };
