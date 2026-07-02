@@ -3,7 +3,15 @@ import { generatePatientProgressSummary } from "./azure-openai";
 import { prisma } from "./prisma";
 import { getDemoLoginEnabled } from "./server-config";
 import { actualModeForConsent, type ConsentStatus, type InputMode } from "./status";
-import type { PatientHistoryResponse, PatientProgressSummary, PatientProgressTrend, VisitWithPatient } from "./types";
+import type {
+  PatientHistoryResponse,
+  PatientProgressConfidence,
+  PatientProgressSummary,
+  PatientProgressTrend,
+  VisitWithPatient
+} from "./types";
+
+const PATIENT_PROGRESS_CACHE_VERSION = "progress-summary-v2";
 
 export function hashPassword(password: string) {
   return createHash("sha256").update(password).digest("hex");
@@ -17,85 +25,32 @@ export function publicDoctor(doctor: { id: string; name: string; email: string }
   };
 }
 
-const PROGRESS_SECTION_HEADINGS = [
-  "Patient concern",
-  "Key history from conversation",
-  "Doctor assessment/plan",
-  "Follow-up / instructions"
-];
-
 const PROGRESS_CACHE_SECTION_HEADINGS = [
+  "Timeline snapshot",
   "Key changes since last visit",
+  "Persistent or unresolved issues",
   "Unresolved issues",
-  "Follow-up progress"
+  "Follow-up progress / adherence",
+  "Follow-up progress",
+  "Doctor review prompts"
 ];
 
 function cleanSummaryLine(line: string) {
   return line.replace(/^[-*]\s*/, "").trim();
 }
 
-function extractSummarySection(summary: string, heading: string) {
-  const lines = summary.split(/\r?\n/);
-  const startIndex = lines.findIndex((line) => line.trim().toLowerCase() === heading.toLowerCase());
-  if (startIndex < 0) return [];
-
-  const sectionLines: string[] = [];
-  for (const line of lines.slice(startIndex + 1)) {
-    const cleaned = cleanSummaryLine(line);
-    if (!cleaned) continue;
-    if (PROGRESS_SECTION_HEADINGS.some((knownHeading) => cleaned.toLowerCase() === knownHeading.toLowerCase())) {
-      break;
-    }
-    sectionLines.push(cleaned);
-  }
-
-  return sectionLines;
-}
-
-function summaryItems(summary: string, maxItems = 4) {
-  const structuredItems = PROGRESS_SECTION_HEADINGS.flatMap((heading) => extractSummarySection(summary, heading));
-  const fallbackItems = summary
-    .split(/\r?\n+/)
-    .map(cleanSummaryLine)
-    .filter((line) => line && !PROGRESS_SECTION_HEADINGS.some((heading) => heading.toLowerCase() === line.toLowerCase()));
-
-  return (structuredItems.length ? structuredItems : fallbackItems).slice(0, maxItems);
-}
-
-function inferProgressTrend(latestSummary: string): PatientProgressTrend {
-  const text = latestSummary.toLowerCase();
-  const hasWorseningSignal = /\b(worse|worsening|deteriorat|increased|increasing|persistent|not improved|uncontrolled)\b/.test(text);
-  const hasImprovingSignal = /\b(improv|better|resolved|decreased|decreasing|controlled|less frequent)\b/.test(text);
-  const hasStableSignal = /\b(stable|unchanged|same as|no change)\b/.test(text);
-
-  if (hasWorseningSignal && !hasImprovingSignal) return "worsening";
-  if (hasImprovingSignal && !hasWorseningSignal) return "improving";
-  if (hasStableSignal) return "stable";
-  return "unclear";
-}
-
 function isProgressTrend(value: string): value is PatientProgressTrend {
-  return value === "improving" || value === "stable" || value === "worsening" || value === "unclear";
+  return (
+    value === "improving" ||
+    value === "stable" ||
+    value === "worsening" ||
+    value === "mixed" ||
+    value === "unclear"
+  );
 }
 
-function buildProgressSummaryContent(input: {
-  trend: PatientProgressTrend;
-  keyChangesSinceLastVisit: string[];
-  unresolvedIssues: string[];
-  followUpProgress: string[];
-}) {
-  return [
-    `Trend: ${input.trend}`,
-    "",
-    "Key changes since last visit",
-    ...input.keyChangesSinceLastVisit.map((item) => `- ${item}`),
-    "",
-    "Unresolved issues",
-    ...input.unresolvedIssues.map((item) => `- ${item}`),
-    "",
-    "Follow-up progress",
-    ...input.followUpProgress.map((item) => `- ${item}`)
-  ].join("\n");
+function isProgressConfidence(value: string): value is PatientProgressConfidence {
+  return value === "early signal" || value === "moderate" || value === "limited evidence" || value === "unclear";
 }
 
 function extractProgressCacheSection(summaryContent: string, heading: string) {
@@ -123,6 +78,8 @@ function progressSummaryFromCache(cache: {
   approvedVisitCount: number;
   summaryContent: string;
   trendLabel: string;
+  confidenceLabel: string;
+  cacheVersion: string;
   generatedAt: Date;
   updatedAt: Date;
 }): PatientProgressSummary {
@@ -131,13 +88,23 @@ function progressSummaryFromCache(cache: {
     patientId: cache.patientId,
     patientEmail: cache.patientEmail,
     trend: isProgressTrend(cache.trendLabel) ? cache.trendLabel : "unclear",
+    confidence: isProgressConfidence(cache.confidenceLabel) ? cache.confidenceLabel : "unclear",
+    cacheVersion: cache.cacheVersion,
     approvedVisitCount: cache.approvedVisitCount,
     summaryContent: cache.summaryContent,
     generatedAt: cache.generatedAt,
     updatedAt: cache.updatedAt,
+    timelineSnapshot: extractProgressCacheSection(cache.summaryContent, "Timeline snapshot"),
     keyChangesSinceLastVisit: extractProgressCacheSection(cache.summaryContent, "Key changes since last visit"),
-    unresolvedIssues: extractProgressCacheSection(cache.summaryContent, "Unresolved issues"),
-    followUpProgress: extractProgressCacheSection(cache.summaryContent, "Follow-up progress")
+    unresolvedIssues:
+      extractProgressCacheSection(cache.summaryContent, "Persistent or unresolved issues").length > 0
+        ? extractProgressCacheSection(cache.summaryContent, "Persistent or unresolved issues")
+        : extractProgressCacheSection(cache.summaryContent, "Unresolved issues"),
+    followUpProgress:
+      extractProgressCacheSection(cache.summaryContent, "Follow-up progress / adherence").length > 0
+        ? extractProgressCacheSection(cache.summaryContent, "Follow-up progress / adherence")
+        : extractProgressCacheSection(cache.summaryContent, "Follow-up progress"),
+    doctorReviewPrompts: extractProgressCacheSection(cache.summaryContent, "Doctor review prompts")
   };
 }
 
@@ -149,56 +116,9 @@ function latestApprovedVisitTime(approvedVisits: VisitWithPatient[]) {
 
 function isProgressCacheFresh(progressSummary: PatientProgressSummary | null, approvedVisits: VisitWithPatient[]) {
   if (!progressSummary?.generatedAt) return false;
+  if (progressSummary.cacheVersion !== PATIENT_PROGRESS_CACHE_VERSION) return false;
   if (progressSummary.approvedVisitCount !== approvedVisits.length) return false;
   return new Date(progressSummary.generatedAt).getTime() >= latestApprovedVisitTime(approvedVisits);
-}
-
-function buildProgressSummary(approvedVisits: VisitWithPatient[]): PatientProgressSummary | null {
-  if (approvedVisits.length < 2) return null;
-
-  const [latestVisit, previousVisit] = approvedVisits;
-  const latestSummary = latestVisit.approvedSummary?.trim() || "";
-  const previousSummary = previousVisit.approvedSummary?.trim() || "";
-  const previousSummaryLower = previousSummary.toLowerCase();
-
-  const latestItems = summaryItems(latestSummary, 8);
-  const changedItems = latestItems
-    .filter((item) => !previousSummaryLower.includes(item.toLowerCase()))
-    .slice(0, 4);
-
-  const unresolvedItems = latestItems
-    .filter((item) => /\b(pending|unresolved|continue|follow up|monitor|persistent|not documented|return|referral)\b/i.test(item))
-    .slice(0, 4);
-
-  const followUpItems = extractSummarySection(latestSummary, "Follow-up / instructions").slice(0, 4);
-  const trend = inferProgressTrend(latestSummary);
-  const keyChangesSinceLastVisit = changedItems.length
-    ? changedItems
-    : ["No clearly documented change was detected between the two latest approved summaries."];
-  const unresolvedIssues = unresolvedItems.length
-    ? unresolvedItems
-    : ["No unresolved issue is clearly documented in the latest approved summary."];
-  const followUpProgress = followUpItems.length
-    ? followUpItems
-    : ["No follow-up progress is clearly documented in the latest approved summary."];
-
-  return {
-    patientId: latestVisit.patientId,
-    patientEmail: latestVisit.patient.email,
-    trend,
-    approvedVisitCount: approvedVisits.length,
-    summaryContent: buildProgressSummaryContent({
-      trend,
-      keyChangesSinceLastVisit,
-      unresolvedIssues,
-      followUpProgress
-    }),
-    latestApprovedAt: latestVisit.approvedAt,
-    previousApprovedAt: previousVisit.approvedAt,
-    keyChangesSinceLastVisit,
-    unresolvedIssues,
-    followUpProgress
-  };
 }
 
 export async function signUpDoctor(name: string, email: string, password: string) {
@@ -376,13 +296,17 @@ async function upsertProgressSummaryFromApprovedVisits(input: {
     patientId: latestVisit.patientId,
     patientEmail: normalizedPatientEmail,
     trend: generatedSummary.trend,
+    confidence: generatedSummary.confidence,
+    cacheVersion: PATIENT_PROGRESS_CACHE_VERSION,
     approvedVisitCount: input.approvedVisits.length,
     summaryContent: generatedSummary.summaryContent,
     latestApprovedAt: latestVisit.approvedAt,
     previousApprovedAt: previousVisit.approvedAt,
+    timelineSnapshot: generatedSummary.timelineSnapshot,
     keyChangesSinceLastVisit: generatedSummary.keyChangesSinceLastVisit,
     unresolvedIssues: generatedSummary.unresolvedIssues,
-    followUpProgress: generatedSummary.followUpProgress
+    followUpProgress: generatedSummary.followUpProgress,
+    doctorReviewPrompts: generatedSummary.doctorReviewPrompts
   };
   const now = new Date();
   try {
@@ -400,6 +324,8 @@ async function upsertProgressSummaryFromApprovedVisits(input: {
         approvedVisitCount: progressSummary.approvedVisitCount,
         summaryContent: progressSummary.summaryContent,
         trendLabel: progressSummary.trend,
+        confidenceLabel: progressSummary.confidence,
+        cacheVersion: PATIENT_PROGRESS_CACHE_VERSION,
         generatedAt: now
       },
       update: {
@@ -407,6 +333,8 @@ async function upsertProgressSummaryFromApprovedVisits(input: {
         approvedVisitCount: progressSummary.approvedVisitCount,
         summaryContent: progressSummary.summaryContent,
         trendLabel: progressSummary.trend,
+        confidenceLabel: progressSummary.confidence,
+        cacheVersion: PATIENT_PROGRESS_CACHE_VERSION,
         generatedAt: now
       }
     });
@@ -493,7 +421,8 @@ export async function getPatientProgressSummaryForDoctor(input: {
       }
     });
 
-    return cache ? progressSummaryFromCache(cache) : null;
+    if (!cache || cache.cacheVersion !== PATIENT_PROGRESS_CACHE_VERSION) return null;
+    return progressSummaryFromCache(cache);
   } catch (error) {
     console.warn("[DoctorAI patient progress cache fetch failed]", error);
     return null;

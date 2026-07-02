@@ -40,22 +40,28 @@ export type PatientHistoryVisit = VisitWithPatient & {
   isCurrentVisit?: boolean;
 };
 
-export type PatientProgressTrend = "improving" | "stable" | "worsening" | "unclear";
+export type PatientProgressTrend = "improving" | "stable" | "worsening" | "mixed" | "unclear";
+
+export type PatientProgressConfidence = "early signal" | "moderate" | "limited evidence" | "unclear";
 
 export type PatientProgressSummary = {
   id?: string;
   patientId?: string;
   patientEmail?: string;
   trend: PatientProgressTrend;
+  confidence: PatientProgressConfidence;
+  cacheVersion?: string;
   approvedVisitCount: number;
   summaryContent: string;
   latestApprovedAt?: string | Date | null;
   previousApprovedAt?: string | Date | null;
   generatedAt?: string | Date | null;
   updatedAt?: string | Date | null;
+  timelineSnapshot: string[];
   keyChangesSinceLastVisit: string[];
   unresolvedIssues: string[];
   followUpProgress: string[];
+  doctorReviewPrompts: string[];
 };
 
 export type PatientHistoryResponse = {

@@ -152,7 +152,15 @@ function trendTone(trend: string) {
   if (trend === "improving") return "bg-moss text-white";
   if (trend === "stable") return "bg-mint text-ink";
   if (trend === "worsening") return "bg-coral text-white";
+  if (trend === "mixed") return "bg-amberline text-ink";
   return "bg-clinic text-moss";
+}
+
+function confidenceTone(confidence: string) {
+  if (confidence === "moderate") return "bg-moss text-white";
+  if (confidence === "early signal") return "bg-amberline text-ink";
+  if (confidence === "limited evidence") return "bg-clinic text-moss";
+  return "bg-clinic text-ink";
 }
 
 function summaryPreview(summary?: string | null) {
@@ -269,12 +277,12 @@ function PatientHistoryPanel({
             activeTab === "PROGRESS_SUMMARY" ? "bg-white text-moss shadow-soft" : "text-ink"
           }`}
         >
-          Progress Summary
+          AI Progress Summary
         </button>
       </div>
       {!progressSummary && (
         <p className="mt-2 text-xs font-semibold text-ink/60">
-          Progress Summary appears after at least 2 approved visits for this patient.
+          AI Progress Summary appears after at least 2 approved visits for this patient.
         </p>
       )}
 
@@ -333,38 +341,62 @@ function PatientHistoryPanel({
         <div className="mt-3 space-y-3">
           {progressSummary ? (
             <>
-              <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-clinic p-3">
-                <div>
-                  <p className="text-xs font-bold uppercase text-moss">Trend</p>
-                  <p className="mt-1 text-sm text-ink/70">
-                    Based on the two latest approved summaries only.
-                  </p>
+              <div className="rounded-lg bg-clinic p-3">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-bold text-ink">AI Progress Summary — Beta</p>
+                    <p className="mt-1 text-xs font-semibold text-ink/65">
+                      Generated from approved visit summaries only. Doctor review required.
+                    </p>
+                    {progressSummary.approvedVisitCount === 2 && (
+                      <p className="mt-2 text-xs font-bold text-moss">
+                        Early trend — only 2 approved visits available.
+                      </p>
+                    )}
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <span className={`rounded-md px-2 py-1 text-xs font-bold ${trendTone(progressSummary.trend)}`}>
+                      {labelFromCode(progressSummary.trend)}
+                    </span>
+                    <span
+                      className={`rounded-md px-2 py-1 text-xs font-bold ${confidenceTone(
+                        progressSummary.confidence
+                      )}`}
+                    >
+                      {labelFromCode(progressSummary.confidence)}
+                    </span>
+                  </div>
                 </div>
-                <span className={`rounded-md px-2 py-1 text-xs font-bold ${trendTone(progressSummary.trend)}`}>
-                  {labelFromCode(progressSummary.trend)}
-                </span>
               </div>
 
               {[
+                ["Timeline snapshot", progressSummary.timelineSnapshot],
                 ["Key changes since last visit", progressSummary.keyChangesSinceLastVisit],
-                ["Unresolved issues", progressSummary.unresolvedIssues],
-                ["Follow-up progress", progressSummary.followUpProgress]
+                ["Persistent or unresolved issues", progressSummary.unresolvedIssues],
+                ["Follow-up progress / adherence", progressSummary.followUpProgress],
+                ["Doctor review prompts", progressSummary.doctorReviewPrompts]
               ].map(([title, items]) => (
                 <div key={title as string}>
                   <p className="text-sm font-bold text-ink">{title as string}</p>
                   <div className="mt-2 space-y-1">
-                    {(items as string[]).map((item) => (
-                      <p key={item} className="rounded-lg bg-clinic px-3 py-2 text-sm leading-relaxed text-ink/80">
-                        {item}
+                    {(items as string[]).length > 0 ? (
+                      (items as string[]).map((item) => (
+                        <p key={item} className="rounded-lg bg-clinic px-3 py-2 text-sm leading-relaxed text-ink/80">
+                          {item}
+                        </p>
+                      ))
+                    ) : (
+                      <p className="rounded-lg bg-clinic px-3 py-2 text-sm leading-relaxed text-ink/70">
+                        Not clearly documented in the approved summaries.
                       </p>
-                    ))}
+                    )}
                   </div>
                 </div>
               ))}
             </>
           ) : (
             <p className="rounded-lg bg-clinic px-3 py-2 text-sm font-semibold text-ink">
-              Progress Summary becomes available after at least 2 approved visits for this patient.
+              AI Progress Summary becomes available after at least 2 approved visits for this patient.
             </p>
           )}
         </div>
