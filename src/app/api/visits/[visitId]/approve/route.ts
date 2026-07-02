@@ -1,7 +1,10 @@
+import { sendApprovedSummaryEmail } from "@/lib/email";
 import { badRequest, ok, serverError } from "@/lib/http";
 import {
   approveVisitSummary,
+  createPatientSummaryLinkForVisit,
   generateOrUpdatePatientProgressSummaryForDoctor,
+  recordEmailDelivery,
   updateUnencryptedEmailConsent
 } from "@/lib/store";
 
@@ -41,7 +44,54 @@ export async function POST(
       console.warn("[DoctorAI patient progress cache update failed]", error);
     });
 
-    return ok({ visit: approvedVisit });
+    if (approvedVisit.unencryptedEmailConsentStatus !== "APPROVED") {
+      return ok({
+        visit: approvedVisit,
+        emailSkipped: true,
+        emailMessage: "Summary approved. Secure link was not emailed because patient email consent is not approved."
+      });
+    }
+
+    try {
+      const summaryLink = await createPatientSummaryLinkForVisit({ visitId });
+      const emailResult = await sendApprovedSummaryEmail({
+        recipient: approvedVisit.patient.email,
+        summaryUrl: summaryLink.url,
+        expiresAt: summaryLink.expiresAt
+      });
+
+      const result = await recordEmailDelivery({
+        visitId,
+        recipient: approvedVisit.patient.email,
+        status: emailResult.status,
+        providerId: emailResult.providerId
+      });
+
+      return ok({
+        visit: result.visit,
+        emailDeliveryLog: result.emailDeliveryLog,
+        emailSimulated: emailResult.status === "SIMULATED"
+      });
+    } catch (emailError) {
+      const failureMessage =
+        emailError instanceof Error ? emailError.message : "Email delivery failed.";
+
+      const failedDelivery = await recordEmailDelivery({
+        visitId,
+        recipient: approvedVisit.patient.email,
+        status: "FAILED",
+        error: failureMessage
+      }).catch((loggingError) => {
+        console.warn("[DoctorAI email failure log failed]", loggingError);
+        return null;
+      });
+
+      return ok({
+        visit: failedDelivery?.visit ?? approvedVisit,
+        emailDeliveryLog: failedDelivery?.emailDeliveryLog,
+        emailError: "Summary approved, but secure link email failed."
+      });
+    }
   } catch (error) {
     if (error instanceof Error && error.message.includes("required before approval")) {
       return badRequest(error.message);

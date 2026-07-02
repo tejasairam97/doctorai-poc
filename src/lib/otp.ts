@@ -13,6 +13,7 @@ export const OTP_MAX_IP_REQUESTS_PER_WINDOW = 20;
 export const PATIENT_SESSION_COOKIE_NAME = "doctorai_patient_session";
 export const PATIENT_SESSION_EXPIRES_IN_DAYS = 30;
 export const PATIENT_SESSION_EXPIRES_IN_SECONDS = PATIENT_SESSION_EXPIRES_IN_DAYS * 24 * 60 * 60;
+export const PATIENT_SUMMARY_LINK_EXPIRES_IN_DAYS = 30;
 
 export function normalizeOtpEmail(email: string) {
   return email.trim().toLowerCase();
@@ -67,4 +68,12 @@ export function generatePatientSessionToken() {
 
 export function hashPatientSessionToken(token: string) {
   return hmacHex(["doctorai-patient-session-v1", token].join(":"));
+}
+
+export function generatePatientSummaryLinkToken() {
+  return randomBytes(32).toString("base64url");
+}
+
+export function hashPatientSummaryLinkToken(token: string) {
+  return hmacHex(["doctorai-patient-summary-link-v1", token].join(":"));
 }

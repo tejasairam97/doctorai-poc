@@ -3,8 +3,10 @@ import { generatePatientProgressSummary } from "./azure-openai";
 import {
   generateOtpCode,
   generatePatientSessionToken,
+  generatePatientSummaryLinkToken,
   hashOtpCode,
   hashPatientSessionToken,
+  hashPatientSummaryLinkToken,
   normalizeOtpEmail,
   OTP_EMAIL_COOLDOWN_SECONDS,
   OTP_EXPIRES_IN_MINUTES,
@@ -13,19 +15,21 @@ import {
   OTP_MAX_IP_REQUESTS_PER_WINDOW,
   OTP_RATE_LIMIT_WINDOW_MINUTES,
   PATIENT_SESSION_EXPIRES_IN_DAYS,
+  PATIENT_SUMMARY_LINK_EXPIRES_IN_DAYS,
   purposeForRoleContext,
   verifyHash,
   type OtpPurpose,
   type OtpRoleContext
 } from "./otp";
 import { prisma } from "./prisma";
-import { getDemoLoginEnabled } from "./server-config";
+import { getAppBaseUrl, getDemoLoginEnabled } from "./server-config";
 import { actualModeForConsent, type ConsentStatus, type InputMode } from "./status";
 import type {
   PatientHistoryResponse,
   PatientProgressConfidence,
   PatientProgressSummary,
   PatientProgressTrend,
+  PatientSummaryLinkAccess,
   PatientPortalProgressGroup,
   PatientPortalVisit,
   PatientSession,
@@ -193,6 +197,13 @@ export async function loginDoctor(email: string, password: string) {
   });
 }
 
+export async function getDoctorByEmail(email: string) {
+  return prisma.doctorAccount.findUnique({
+    where: { email: email.trim().toLowerCase() },
+    select: { id: true, name: true, email: true }
+  });
+}
+
 export async function getDoctorById(doctorId: string) {
   return prisma.doctorAccount.findUnique({
     where: { id: doctorId },
@@ -215,6 +226,30 @@ function publicPatientSession(session: {
 
 function patientSessionExpiresAt() {
   return new Date(Date.now() + PATIENT_SESSION_EXPIRES_IN_DAYS * 24 * 60 * 60 * 1000);
+}
+
+function patientSummaryLinkExpiresAt() {
+  return new Date(Date.now() + PATIENT_SUMMARY_LINK_EXPIRES_IN_DAYS * 24 * 60 * 60 * 1000);
+}
+
+function maskPatientEmail(email: string) {
+  const normalized = normalizeOtpEmail(email);
+  const [localPart, domainPart = ""] = normalized.split("@");
+  const maskedLocal =
+    localPart.length <= 2
+      ? `${localPart.slice(0, 1) || "*"}***`
+      : `${localPart.slice(0, 1)}***${localPart.slice(-1)}`;
+  const [domainName = "", ...domainSuffixParts] = domainPart.split(".");
+  const maskedDomain =
+    domainName.length <= 2
+      ? `${domainName.slice(0, 1) || "*"}***`
+      : `${domainName.slice(0, 1)}***${domainName.slice(-1)}`;
+  const suffix = domainSuffixParts.length ? `.${domainSuffixParts.join(".")}` : "";
+  return `${maskedLocal}@${maskedDomain}${suffix}`;
+}
+
+function patientSummaryUrl(token: string) {
+  return new URL(`/patient/summary/${encodeURIComponent(token)}`, getAppBaseUrl()).toString();
 }
 
 export async function createLoginOtpChallenge(input: {
@@ -292,6 +327,31 @@ export async function createLoginOtpChallenge(input: {
   return { code, expiresAt, rateLimited: false };
 }
 
+export async function createDoctorLoginOtpChallenge(input: {
+  email: string;
+  requestIp?: string | null;
+  userAgent?: string | null;
+}) {
+  const normalizedEmail = normalizeOtpEmail(input.email);
+  const doctor = await getDoctorByEmail(normalizedEmail);
+  if (!doctor) {
+    return { code: null, expiresAt: null, rateLimited: false, accountExists: false as const };
+  }
+
+  const challenge = await createLoginOtpChallenge({
+    email: normalizedEmail,
+    roleContext: "doctor",
+    purpose: purposeForRoleContext("doctor"),
+    requestIp: input.requestIp,
+    userAgent: input.userAgent
+  });
+
+  return {
+    ...challenge,
+    accountExists: true as const
+  };
+}
+
 export async function verifyLoginOtp(input: {
   email: string;
   roleContext: OtpRoleContext;
@@ -360,6 +420,22 @@ export async function verifyLoginOtp(input: {
   });
 }
 
+export async function verifyDoctorLoginOtp(input: { email: string; code: string }) {
+  const normalizedEmail = normalizeOtpEmail(input.email);
+  const doctor = await getDoctorByEmail(normalizedEmail);
+  if (!doctor) return null;
+
+  const result = await verifyLoginOtp({
+    email: normalizedEmail,
+    roleContext: "doctor",
+    purpose: purposeForRoleContext("doctor"),
+    code: input.code
+  });
+
+  if (!result.verified) return null;
+  return doctor;
+}
+
 export async function getPatientSessionByToken(token: string | undefined | null) {
   if (!token) return null;
 
@@ -389,6 +465,151 @@ export async function revokePatientSessionByToken(token: string | undefined | nu
       data: { revokedAt: new Date() }
     })
     .catch(() => undefined);
+}
+
+export async function createPatientSummaryLinkForVisit(input: { visitId: string }) {
+  const visit = await prisma.visit.findUnique({
+    where: { id: input.visitId },
+    include: { patient: true }
+  });
+
+  if (!visit) {
+    throw new Error("Visit not found.");
+  }
+
+  if (!visit.approvedSummary?.trim()) {
+    throw new Error("Approve the summary before creating a patient link.");
+  }
+
+  const token = generatePatientSummaryLinkToken();
+  const expiresAt = patientSummaryLinkExpiresAt();
+  const link = await prisma.patientSummaryLink.create({
+    data: {
+      visitId: visit.id,
+      patientEmail: normalizeOtpEmail(visit.patient.email),
+      tokenHash: hashPatientSummaryLinkToken(token),
+      expiresAt,
+      createdByDoctorId: visit.doctorId
+    }
+  });
+
+  return {
+    token,
+    url: patientSummaryUrl(token),
+    expiresAt: link.expiresAt
+  };
+}
+
+export async function getPatientSummaryLinkOtpTarget(token: string) {
+  const trimmedToken = token.trim();
+  if (!trimmedToken) return { status: "invalid" as const };
+
+  const link = await prisma.patientSummaryLink.findUnique({
+    where: { tokenHash: hashPatientSummaryLinkToken(trimmedToken) },
+    include: {
+      visit: {
+        select: {
+          approvedSummary: true
+        }
+      }
+    }
+  });
+
+  if (!link || !link.visit.approvedSummary?.trim()) {
+    return { status: "invalid" as const };
+  }
+
+  if (link.expiresAt <= new Date()) {
+    return {
+      status: "expired" as const,
+      maskedPatientEmail: maskPatientEmail(link.patientEmail),
+      expiresAt: link.expiresAt
+    };
+  }
+
+  return {
+    status: "ready" as const,
+    patientEmail: normalizeOtpEmail(link.patientEmail),
+    maskedPatientEmail: maskPatientEmail(link.patientEmail),
+    expiresAt: link.expiresAt
+  };
+}
+
+export async function getPatientSummaryLinkAccess(input: {
+  token: string;
+  patientSessionEmail?: string | null;
+}): Promise<PatientSummaryLinkAccess> {
+  const token = input.token.trim();
+  if (!token) return { status: "invalid" };
+
+  const link = await prisma.patientSummaryLink.findUnique({
+    where: { tokenHash: hashPatientSummaryLinkToken(token) },
+    include: {
+      visit: {
+        include: {
+          patient: true,
+          doctor: {
+            select: {
+              id: true,
+              name: true,
+              email: true
+            }
+          }
+        }
+      }
+    }
+  });
+
+  if (!link || !link.visit.approvedSummary?.trim()) {
+    return { status: "invalid" };
+  }
+
+  const now = new Date();
+  const maskedPatientEmail = maskPatientEmail(link.patientEmail);
+  if (link.expiresAt <= now) {
+    return {
+      status: "expired",
+      maskedPatientEmail,
+      expiresAt: link.expiresAt
+    };
+  }
+
+  const patientSessionEmail = input.patientSessionEmail ? normalizeOtpEmail(input.patientSessionEmail) : null;
+  if (patientSessionEmail !== normalizeOtpEmail(link.patientEmail)) {
+    return {
+      status: "verification_required",
+      maskedPatientEmail,
+      expiresAt: link.expiresAt,
+      sessionEmail: patientSessionEmail
+    };
+  }
+
+  const usedAt = link.usedAt
+    ? link.usedAt
+    : (
+        await prisma.patientSummaryLink
+          .update({
+            where: { id: link.id },
+            data: { usedAt: now },
+            select: { usedAt: true }
+          })
+          .catch(() => ({ usedAt: link.usedAt }))
+      ).usedAt;
+
+  return {
+    status: "authorized",
+    expiresAt: link.expiresAt,
+    usedAt,
+    visit: {
+      id: link.visit.id,
+      doctor: link.visit.doctor,
+      patientName: link.visit.patient.name,
+      patientAge: link.visit.patient.age,
+      approvedSummary: link.visit.approvedSummary || "",
+      approvedAt: link.visit.approvedAt,
+      createdAt: link.visit.createdAt
+    }
+  };
 }
 
 export async function createDraftVisit(input: {

@@ -137,30 +137,40 @@ async function sendAcsEmail(input: {
 }
 
 export async function sendApprovedSummaryEmail(input: {
-  patientName: string;
   recipient: string;
-  approvedSummary: string;
+  summaryUrl: string;
+  expiresAt: Date;
 }): Promise<EmailSendResult> {
+  const expirationDate = input.expiresAt.toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric"
+  });
   const plainText = [
-    `Hello ${input.patientName},`,
+    "Hello,",
     "",
-    "Your clinician has approved the following visit summary:",
+    "Your DoctorAI visit summary is ready.",
+    "For privacy, the summary is not included in this email.",
+    "Open the secure link below and verify your email with a one-time code before viewing it:",
     "",
-    input.approvedSummary,
+    input.summaryUrl,
     "",
+    `This link expires on ${expirationDate}.`,
     "Please contact your clinician's office with questions."
   ].join("\n");
   const html = `
-    <p>Hello ${escapeHtml(input.patientName)},</p>
-    <p>Your clinician has approved the following visit summary:</p>
-    <pre style="font-family:Arial,sans-serif;white-space:pre-wrap">${escapeHtml(input.approvedSummary)}</pre>
+    <p>Hello,</p>
+    <p>Your DoctorAI visit summary is ready.</p>
+    <p>For privacy, the summary is not included in this email. Open the secure link below and verify your email with a one-time code before viewing it.</p>
+    <p><a href="${escapeHtml(input.summaryUrl)}">Open your secure visit summary</a></p>
+    <p>This link expires on ${escapeHtml(expirationDate)}.</p>
     <p>Please contact your clinician's office with questions.</p>
   `;
 
   return sendAcsEmail({
     recipient: input.recipient,
-    displayName: input.patientName,
-    subject: "Your visit summary",
+    displayName: "DoctorAI patient",
+    subject: "Your DoctorAI visit summary is ready",
     plainText,
     html
   });
