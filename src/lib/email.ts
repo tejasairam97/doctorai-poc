@@ -34,8 +34,16 @@ function escapeHtml(value: string) {
 
 export function getEmailConfigStatus() {
   const env = getAcsEmailEnv();
+  const configured = Boolean(env.connectionString && env.senderAddress);
+  const production = process.env.NODE_ENV === "production";
+
   return {
-    configured: Boolean(env.connectionString && env.senderAddress),
+    configured,
+    acsConfigured: Boolean(env.connectionString),
+    senderConfigured: Boolean(env.senderAddress),
+    providerMode: configured ? "ACS" : production ? "CONFIG_ERROR" : "SIMULATED",
+    endpointHost: env.endpointHost,
+    connectionStringSource: env.connectionStringSource,
     missing: {
       connectionString: !env.connectionString,
       senderAddress: !env.senderAddress
@@ -55,11 +63,29 @@ async function sendAcsEmail(input: {
 
   console.info("[DoctorAI email config]", {
     acsConfigured: config.configured,
-    senderConfigured: !config.missing.senderAddress,
-    sendAttempted: Boolean(env.connectionString && env.senderAddress)
+    senderConfigured: config.senderConfigured,
+    providerMode: config.providerMode,
+    endpointHost: config.endpointHost,
+    connectionStringSource: config.connectionStringSource,
+    sendAttempted: config.configured
   });
 
-  if (!env.connectionString || !env.senderAddress) {
+  if (!config.configured) {
+    const missing = [
+      config.missing.connectionString ? "ACS_CONNECTION_STRING" : "",
+      config.missing.senderAddress ? "ACS_SENDER_ADDRESS" : ""
+    ].filter(Boolean);
+    const message = `ACS Email is not fully configured. Missing: ${missing.join(", ")}.`;
+
+    if (process.env.NODE_ENV === "production") {
+      console.warn("[DoctorAI email config failure]", {
+        providerMode: config.providerMode,
+        missing,
+        endpointHost: config.endpointHost
+      });
+      throw new Error(message);
+    }
+
     const simulatedId = `local-simulated-${Date.now()}`;
     return {
       status: "SIMULATED",

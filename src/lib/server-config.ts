@@ -8,6 +8,7 @@ export type ServerEnvKey =
   | "AZURE_OPENAI_NORMALIZATION_DEPLOYMENT"
   | "DATABASE_URL"
   | "ACS_CONNECTION_STRING"
+  | "COMMUNICATION_SERVICES_CONNECTION_STRING"
   | "ACS_SENDER_ADDRESS"
   | "APP_BASE_URL"
   | "AUTH_SECRET"
@@ -46,6 +47,7 @@ export const OPTIONAL_SERVICE_ENV_KEYS: ServerEnvKey[] = [
   "AZURE_OPENAI_SUMMARY_DEPLOYMENT",
   "AZURE_OPENAI_NORMALIZATION_DEPLOYMENT",
   "ACS_CONNECTION_STRING",
+  "COMMUNICATION_SERVICES_CONNECTION_STRING",
   "ACS_SENDER_ADDRESS",
   "ENABLE_DEMO_LOGIN"
 ];
@@ -75,12 +77,31 @@ export function readServerEnv(key: ServerEnvKey) {
 
 export function isPlaceholderEnvValue(value: string) {
   const normalized = value.trim().toLowerCase();
+  const obviousPlaceholders = new Set([
+    "placeholder",
+    "changeme",
+    "change-me",
+    "todo",
+    "tbd",
+    "null",
+    "undefined"
+  ]);
+
   return (
     !normalized ||
+    obviousPlaceholders.has(normalized) ||
     normalized.includes("replace-with") ||
-    normalized.includes("your-") ||
-    normalized.includes("placeholder") ||
-    normalized.includes("example")
+    normalized.includes("<") ||
+    normalized.includes(">") ||
+    normalized.includes("your-acs-resource") ||
+    normalized.includes("your-verified-domain.example") ||
+    normalized.includes("your-openai-resource") ||
+    normalized.includes("your-speech-resource") ||
+    normalized.includes("your-auth-secret") ||
+    normalized.includes("your-database") ||
+    normalized.includes("example.com") ||
+    normalized.includes("example.org") ||
+    normalized.includes(".example")
   );
 }
 
@@ -151,7 +172,10 @@ export function getDemoLoginEnabled() {
 export function getDeploymentConfigStatus() {
   const hostedPoc = validateConfiguredServerEnv(HOSTED_POC_REQUIRED_ENV_KEYS);
   const core = validateConfiguredServerEnv(CORE_SERVER_ENV_KEYS);
-  const acs = validateConfiguredServerEnv(["ACS_CONNECTION_STRING", "ACS_SENDER_ADDRESS"]);
+  const acsEmailEnv = getAcsEmailEnv();
+  const acsEmailMissing: ServerEnvKey[] = [];
+  if (!acsEmailEnv.connectionString) acsEmailMissing.push("ACS_CONNECTION_STRING");
+  if (!acsEmailEnv.senderAddress) acsEmailMissing.push("ACS_SENDER_ADDRESS");
 
   return {
     ready: hostedPoc.ok,
@@ -160,8 +184,11 @@ export function getDeploymentConfigStatus() {
     missingCore: core.missing,
     missingHostedPoc: hostedPoc.missing,
     optionalServices: {
-      acsEmailConfigured: acs.ok,
-      acsEmailMissing: acs.missing
+      acsEmailConfigured: acsEmailMissing.length === 0,
+      acsEmailMissing,
+      acsEmailProviderMode: acsEmailEnv.connectionString && acsEmailEnv.senderAddress ? "ACS" : "SIMULATED",
+      acsEmailEndpointHost: acsEmailEnv.endpointHost,
+      acsEmailConnectionStringSource: acsEmailEnv.connectionStringSource
     },
     demoLoginEnabled: getDemoLoginEnabled()
   };
@@ -185,8 +212,23 @@ export function getAzureOpenAIEnv() {
 }
 
 export function getAcsEmailEnv() {
+  const primaryConnectionString = readConfiguredServerEnv("ACS_CONNECTION_STRING");
+  const aliasConnectionString = readConfiguredServerEnv("COMMUNICATION_SERVICES_CONNECTION_STRING");
+  const connectionString = primaryConnectionString || aliasConnectionString;
+
   return {
-    connectionString: readConfiguredServerEnv("ACS_CONNECTION_STRING"),
+    connectionString,
+    connectionStringSource: primaryConnectionString
+      ? "ACS_CONNECTION_STRING"
+      : aliasConnectionString
+        ? "COMMUNICATION_SERVICES_CONNECTION_STRING"
+        : null,
+    endpointHost: getAcsEndpointHost(connectionString),
     senderAddress: readConfiguredServerEnv("ACS_SENDER_ADDRESS")
   };
+}
+
+export function getAcsEndpointHost(connectionString: string) {
+  const match = connectionString.match(/endpoint\s*=\s*https:\/\/([^/;]+)/i);
+  return match?.[1] ?? null;
 }

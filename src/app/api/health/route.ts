@@ -19,6 +19,12 @@ export async function GET() {
       missingHostedPoc: config.missingHostedPoc,
       acsEmailConfigured: config.optionalServices.acsEmailConfigured,
       acsEmailMissing: config.optionalServices.acsEmailMissing,
+      emailConfig: {
+        acsConfigured: config.optionalServices.acsEmailConfigured,
+        senderConfigured: !config.optionalServices.acsEmailMissing.includes("ACS_SENDER_ADDRESS"),
+        providerMode: config.optionalServices.acsEmailProviderMode,
+        endpointHost: config.optionalServices.acsEmailEndpointHost
+      },
       demoLoginEnabled: config.demoLoginEnabled
     }
   });
