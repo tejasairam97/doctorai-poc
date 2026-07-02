@@ -231,8 +231,25 @@ The Prisma schema includes the MVP tables:
 - `visits`
 - `usage_events`
 - `email_delivery_logs`
+- `patient_progress_summaries`
 
 The visit model already has fields needed by later documentation work, including consent, input mode, status, transcript, draft summary, approved summary, interruption, resume, approval, email, and draft generation counters.
+
+## Doctor-Side Patient History
+
+Patient history is doctor-scoped for the MVP. The app looks up prior visits by normalized patient email and the current doctor account; doctors do not see visits created by other doctor accounts.
+
+Backend routes:
+
+- `GET /api/patient-history?doctorId=...&patientEmail=...`
+  - returns visit history for that doctor/patient email
+  - includes a progress summary when at least 2 approved visits exist
+- `GET /api/patient-progress?doctorId=...&patientEmail=...`
+  - returns the cached progress summary, if one exists
+- `POST /api/patient-progress`
+  - generates or refreshes the cached progress summary when at least 2 approved visits exist
+
+The `patient_progress_summaries` table caches doctor-side progress summaries by doctor and patient email. It stores the representative patient row, approved visit count, generated summary content, trend label, and generation timestamp. Progress generation uses approved summaries only, never raw transcripts. When Azure OpenAI is configured, generation runs server-side with a lightweight progress prompt; otherwise the app uses a deterministic local fallback. The cache is refreshed when a newly approved visit changes the patient timeline. This phase does not add AI Insights Mode or a patient portal.
 
 ## Local Test Checklist
 

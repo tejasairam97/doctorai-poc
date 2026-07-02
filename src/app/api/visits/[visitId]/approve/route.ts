@@ -1,5 +1,9 @@
 import { badRequest, ok, serverError } from "@/lib/http";
-import { approveVisitSummary, updateUnencryptedEmailConsent } from "@/lib/store";
+import {
+  approveVisitSummary,
+  generateOrUpdatePatientProgressSummaryForDoctor,
+  updateUnencryptedEmailConsent
+} from "@/lib/store";
 
 type EmailConsentStatus = "APPROVED" | "DECLINED" | "NOT_ASKED";
 
@@ -29,6 +33,13 @@ export async function POST(
         consentStatus: body.unencryptedEmailConsentStatus
       });
     }
+
+    await generateOrUpdatePatientProgressSummaryForDoctor({
+      doctorId: approvedVisit.doctorId,
+      patientEmail: approvedVisit.patient.email
+    }).catch((error) => {
+      console.warn("[DoctorAI patient progress cache update failed]", error);
+    });
 
     return ok({ visit: approvedVisit });
   } catch (error) {

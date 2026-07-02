@@ -19,11 +19,12 @@ import {
   Stethoscope,
   UserPlus,
   Wifi,
-  WifiOff
+  WifiOff,
+  X
 } from "lucide-react";
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CONSENT_STATUSES, INPUT_MODES, labelFromCode, type ConsentStatus, type InputMode } from "@/lib/status";
-import type { EmailDeliveryLog, UsageEvent, VisitWithPatient } from "@/lib/types";
+import type { EmailDeliveryLog, PatientHistoryResponse, UsageEvent, VisitWithPatient } from "@/lib/types";
 
 type PublicDoctor = {
   id: string;
@@ -68,6 +69,7 @@ type RuntimeConfigResponse = {
 };
 
 type EmailConsentStatus = "APPROVED" | "DECLINED" | "NOT_ASKED";
+type PatientHistoryTab = "VISIT_HISTORY" | "PROGRESS_SUMMARY";
 
 type AzureRecognizer = {
   recognizing?: (sender: unknown, event: { result?: { text?: string } }) => void;
@@ -144,6 +146,338 @@ function StatusChip({ status }: { status: string }) {
 function formatTimestamp(value?: string | Date | null) {
   if (!value) return "";
   return new Date(value).toLocaleString();
+}
+
+function trendTone(trend: string) {
+  if (trend === "improving") return "bg-moss text-white";
+  if (trend === "stable") return "bg-mint text-ink";
+  if (trend === "worsening") return "bg-coral text-white";
+  return "bg-clinic text-moss";
+}
+
+function summaryPreview(summary?: string | null) {
+  if (!summary?.trim()) return "No approved summary yet.";
+  const words = summary.trim().split(/\s+/).slice(0, 24).join(" ");
+  return summary.trim().split(/\s+/).length > 24 ? `${words}...` : words;
+}
+
+const SUMMARY_SECTION_HEADINGS = [
+  "Patient concern",
+  "Key history from conversation",
+  "Doctor assessment/plan",
+  "Follow-up / instructions"
+];
+
+function extractSummarySection(summary: string | null | undefined, heading: string) {
+  if (!summary?.trim()) return "";
+
+  const lines = summary.split(/\r?\n/);
+  const startIndex = lines.findIndex((line) => line.trim().toLowerCase() === heading.toLowerCase());
+  if (startIndex < 0) return "";
+
+  const sectionLines: string[] = [];
+  for (const line of lines.slice(startIndex + 1)) {
+    const cleaned = line.replace(/^[-*]\s*/, "").trim();
+    if (!cleaned) continue;
+    if (SUMMARY_SECTION_HEADINGS.some((knownHeading) => knownHeading.toLowerCase() === cleaned.toLowerCase())) break;
+    sectionLines.push(cleaned);
+  }
+
+  return sectionLines.join(" ");
+}
+
+function visitConcern(visit: VisitWithPatient) {
+  return extractSummarySection(visit.approvedSummary, "Patient concern") || "Patient concern was not documented.";
+}
+
+function visitFollowUp(visit: VisitWithPatient) {
+  return extractSummarySection(visit.approvedSummary, "Follow-up / instructions") || "No follow-up documented.";
+}
+
+function PatientHistoryPanel({
+  history,
+  isLoading,
+  error,
+  tab,
+  onTabChange,
+  showEmptyState = false
+}: {
+  history: PatientHistoryResponse | null;
+  isLoading: boolean;
+  error: string;
+  tab: PatientHistoryTab;
+  onTabChange: (tab: PatientHistoryTab) => void;
+  showEmptyState?: boolean;
+}) {
+  const [openSummaryVisitId, setOpenSummaryVisitId] = useState<string | null>(null);
+
+  if (isLoading) {
+    return (
+      <div className="rounded-lg border border-mint bg-clinic p-3 text-sm font-semibold text-ink">
+        Checking patient history...
+      </div>
+    );
+  }
+
+  if (error) {
+    return <div className="rounded-lg bg-coral p-3 text-sm font-semibold text-white">{error}</div>;
+  }
+
+  if (!history) return null;
+
+  const hasPriorVisits = history.priorVisitCount > 0;
+  const progressSummary = history.progressSummary;
+
+  if (!hasPriorVisits && !progressSummary) {
+    return showEmptyState ? (
+      <div className="rounded-lg border border-mint bg-clinic p-3 text-sm font-semibold text-ink">
+        No prior visits found for this patient email under this doctor account.
+      </div>
+    ) : null;
+  }
+
+  const activeTab = tab;
+
+  return (
+    <div className="rounded-lg border border-mint bg-white p-3">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <p className="text-sm font-bold text-ink">Patient history</p>
+          <p className="text-xs font-semibold text-ink/65">
+            {history.priorVisitCount} prior visit{history.priorVisitCount === 1 ? "" : "s"} with this doctor
+          </p>
+        </div>
+        <span className="rounded-md bg-clinic px-2 py-1 text-xs font-bold text-moss">
+          {history.approvedVisitCount} approved
+        </span>
+      </div>
+
+      <div className="mt-3 grid grid-cols-2 gap-2 rounded-lg bg-clinic p-1">
+        <button
+          type="button"
+          onClick={() => onTabChange("VISIT_HISTORY")}
+          className={`h-9 rounded-md text-xs font-bold ${
+            activeTab === "VISIT_HISTORY" ? "bg-white text-moss shadow-soft" : "text-ink"
+          }`}
+        >
+          Visit History
+        </button>
+        <button
+          type="button"
+          onClick={() => onTabChange("PROGRESS_SUMMARY")}
+          className={`h-9 rounded-md text-xs font-bold ${
+            activeTab === "PROGRESS_SUMMARY" ? "bg-white text-moss shadow-soft" : "text-ink"
+          }`}
+        >
+          Progress Summary
+        </button>
+      </div>
+      {!progressSummary && (
+        <p className="mt-2 text-xs font-semibold text-ink/60">
+          Progress Summary appears after at least 2 approved visits for this patient.
+        </p>
+      )}
+
+      {activeTab === "VISIT_HISTORY" ? (
+        <div className="mt-3 space-y-2">
+          {history.visits.map((visit) => (
+            <div key={visit.id} className="rounded-lg border border-mint bg-clinic p-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="text-sm font-bold text-ink">
+                  {formatTimestamp(visit.createdAt)}
+                  {visit.isCurrentVisit ? " - Current visit" : ""}
+                </p>
+                <StatusChip status={visit.status} />
+              </div>
+              <p className="mt-1 text-xs font-semibold text-ink/65">
+                {visit.inputModeActual ? labelFromCode(visit.inputModeActual) : "Mode not recorded"}
+              </p>
+              <div className="mt-3 grid gap-2">
+                <div>
+                  <p className="text-xs font-bold uppercase text-moss">Patient issue / concern</p>
+                  <p className="mt-1 text-sm leading-relaxed text-ink/80">{visitConcern(visit)}</p>
+                </div>
+                <div>
+                  <p className="text-xs font-bold uppercase text-moss">Approved summary snippet</p>
+                  <p className="mt-1 text-sm leading-relaxed text-ink/80">{summaryPreview(visit.approvedSummary)}</p>
+                </div>
+                <div>
+                  <p className="text-xs font-bold uppercase text-moss">Follow-up from last time</p>
+                  <p className="mt-1 text-sm leading-relaxed text-ink/80">{visitFollowUp(visit)}</p>
+                </div>
+              </div>
+              {visit.approvedSummary?.trim() && (
+                <button
+                  type="button"
+                  onClick={() =>
+                    setOpenSummaryVisitId((current) => (current === visit.id ? null : visit.id))
+                  }
+                  className="mt-3 flex h-9 items-center gap-2 rounded-lg border border-mint bg-white px-3 text-xs font-bold text-ink"
+                >
+                  <FileText size={14} aria-hidden="true" />
+                  {openSummaryVisitId === visit.id ? "Hide full summary" : "Open full summary"}
+                </button>
+              )}
+              {openSummaryVisitId === visit.id && visit.approvedSummary?.trim() && (
+                <div className="mt-3 rounded-lg bg-white p-3">
+                  <p className="text-xs font-bold uppercase text-moss">Full approved summary</p>
+                  <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed text-ink">
+                    {visit.approvedSummary}
+                  </p>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="mt-3 space-y-3">
+          {progressSummary ? (
+            <>
+              <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-clinic p-3">
+                <div>
+                  <p className="text-xs font-bold uppercase text-moss">Trend</p>
+                  <p className="mt-1 text-sm text-ink/70">
+                    Based on the two latest approved summaries only.
+                  </p>
+                </div>
+                <span className={`rounded-md px-2 py-1 text-xs font-bold ${trendTone(progressSummary.trend)}`}>
+                  {labelFromCode(progressSummary.trend)}
+                </span>
+              </div>
+
+              {[
+                ["Key changes since last visit", progressSummary.keyChangesSinceLastVisit],
+                ["Unresolved issues", progressSummary.unresolvedIssues],
+                ["Follow-up progress", progressSummary.followUpProgress]
+              ].map(([title, items]) => (
+                <div key={title as string}>
+                  <p className="text-sm font-bold text-ink">{title as string}</p>
+                  <div className="mt-2 space-y-1">
+                    {(items as string[]).map((item) => (
+                      <p key={item} className="rounded-lg bg-clinic px-3 py-2 text-sm leading-relaxed text-ink/80">
+                        {item}
+                      </p>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </>
+          ) : (
+            <p className="rounded-lg bg-clinic px-3 py-2 text-sm font-semibold text-ink">
+              Progress Summary becomes available after at least 2 approved visits for this patient.
+            </p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PatientHistoryBanner({
+  history,
+  isLoading,
+  error,
+  onOpen
+}: {
+  history: PatientHistoryResponse | null;
+  isLoading: boolean;
+  error: string;
+  onOpen: () => void;
+}) {
+  if (isLoading) {
+    return (
+      <div className="rounded-lg border border-mint bg-clinic p-3 text-sm font-semibold text-ink">
+        Checking patient history...
+      </div>
+    );
+  }
+
+  if (error) {
+    return <div className="rounded-lg bg-coral p-3 text-sm font-semibold text-white">{error}</div>;
+  }
+
+  if (!history || history.priorVisitCount < 1) return null;
+
+  return (
+    <div className="rounded-lg border border-mint bg-clinic p-3">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <p className="text-sm font-bold text-ink">Previous visits found</p>
+          <p className="mt-1 text-xs font-semibold text-ink/65">
+            {history.priorVisitCount} prior visit{history.priorVisitCount === 1 ? "" : "s"} with this doctor,
+            {" "}
+            {history.approvedVisitCount} approved.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={onOpen}
+          className="flex h-9 items-center gap-2 rounded-lg bg-moss px-3 text-xs font-bold text-white"
+        >
+          <ClipboardList size={14} aria-hidden="true" />
+          Open history
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function PatientHistoryModal({
+  isOpen,
+  onClose,
+  patientEmail,
+  history,
+  isLoading,
+  error,
+  tab,
+  onTabChange
+}: {
+  isOpen: boolean;
+  onClose: () => void;
+  patientEmail: string;
+  history: PatientHistoryResponse | null;
+  isLoading: boolean;
+  error: string;
+  tab: PatientHistoryTab;
+  onTabChange: (tab: PatientHistoryTab) => void;
+}) {
+  if (!isOpen) return null;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end bg-ink/40 px-3 py-4 sm:items-center sm:justify-center">
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="Patient history"
+        className="max-h-[88vh] w-full overflow-y-auto rounded-lg bg-white p-4 shadow-soft sm:max-w-2xl"
+      >
+        <div className="flex items-start justify-between gap-3 border-b border-mint pb-3">
+          <div>
+            <p className="text-sm font-bold text-moss">Patient history</p>
+            <p className="mt-1 break-all text-xs font-semibold text-ink/65">{patientEmail}</p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="flex h-9 w-9 items-center justify-center rounded-lg border border-mint text-ink"
+            aria-label="Close patient history"
+          >
+            <X size={17} aria-hidden="true" />
+          </button>
+        </div>
+        <div className="mt-3">
+          <PatientHistoryPanel
+            history={history}
+            isLoading={isLoading}
+            error={error}
+            tab={tab}
+            onTabChange={onTabChange}
+            showEmptyState
+          />
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function emailConsentStatusFromVisit(visit: VisitWithPatient): EmailConsentStatus {
@@ -227,6 +561,15 @@ export default function Home() {
   const [showUsage, setShowUsage] = useState(false);
   const [isLoadingUsage, setIsLoadingUsage] = useState(false);
   const [showNewVisit, setShowNewVisit] = useState(false);
+  const [newVisitHistory, setNewVisitHistory] = useState<PatientHistoryResponse | null>(null);
+  const [newVisitHistoryTab, setNewVisitHistoryTab] = useState<PatientHistoryTab>("VISIT_HISTORY");
+  const [isNewVisitHistoryOpen, setIsNewVisitHistoryOpen] = useState(false);
+  const [isLoadingNewVisitHistory, setIsLoadingNewVisitHistory] = useState(false);
+  const [newVisitHistoryError, setNewVisitHistoryError] = useState("");
+  const [activeVisitHistory, setActiveVisitHistory] = useState<PatientHistoryResponse | null>(null);
+  const [activeVisitHistoryTab, setActiveVisitHistoryTab] = useState<PatientHistoryTab>("VISIT_HISTORY");
+  const [isLoadingActiveVisitHistory, setIsLoadingActiveVisitHistory] = useState(false);
+  const [activeVisitHistoryError, setActiveVisitHistoryError] = useState("");
   const [isBusy, setIsBusy] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
   const [micState, setMicState] = useState<MicState>("idle");
@@ -282,6 +625,24 @@ export default function Home() {
     []
   );
 
+  const loadPatientHistory = useCallback(
+    async (patientEmail: string, currentVisitId?: string, signal?: AbortSignal) => {
+      if (!doctor) return null;
+
+      const params = new URLSearchParams({
+        doctorId: doctor.id,
+        patientEmail: patientEmail.trim().toLowerCase()
+      });
+      if (currentVisitId) params.set("currentVisitId", currentVisitId);
+
+      const result = await api<{ history: PatientHistoryResponse }>(`/api/patient-history?${params.toString()}`, {
+        signal
+      });
+      return result.history;
+    },
+    [doctor]
+  );
+
   useEffect(() => {
     setIsOnline(navigator.onLine);
     void clearDevelopmentPwaState();
@@ -306,6 +667,93 @@ export default function Home() {
       setError("Please log in again.");
     });
   }, [loadVisits]);
+
+  useEffect(() => {
+    if (!doctor || !showNewVisit) {
+      setNewVisitHistory(null);
+      setNewVisitHistoryError("");
+      setIsLoadingNewVisitHistory(false);
+      setIsNewVisitHistoryOpen(false);
+      return;
+    }
+
+    const patientEmail = visitForm.patientEmail.trim().toLowerCase();
+    if (!patientEmail || !patientEmail.includes("@")) {
+      setNewVisitHistory(null);
+      setNewVisitHistoryError("");
+      setIsLoadingNewVisitHistory(false);
+      setIsNewVisitHistoryOpen(false);
+      return;
+    }
+
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => {
+      setIsLoadingNewVisitHistory(true);
+      setNewVisitHistoryError("");
+      loadPatientHistory(patientEmail, undefined, controller.signal)
+        .then((history) => {
+          if (controller.signal.aborted) return;
+          setNewVisitHistory(history);
+          if (history?.progressSummary) setNewVisitHistoryTab("PROGRESS_SUMMARY");
+          else setNewVisitHistoryTab("VISIT_HISTORY");
+          if (!history || history.priorVisitCount < 1) setIsNewVisitHistoryOpen(false);
+        })
+        .catch((historyError) => {
+          if (controller.signal.aborted) return;
+          setNewVisitHistory(null);
+          setNewVisitHistoryError(
+            historyError instanceof Error ? historyError.message : "Patient history lookup failed."
+          );
+        })
+        .finally(() => {
+          if (!controller.signal.aborted) setIsLoadingNewVisitHistory(false);
+        });
+    }, 450);
+
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [doctor, loadPatientHistory, showNewVisit, visitForm.patientEmail]);
+
+  useEffect(() => {
+    if (!doctor || !activeVisit) {
+      setActiveVisitHistory(null);
+      setActiveVisitHistoryError("");
+      setIsLoadingActiveVisitHistory(false);
+      return;
+    }
+
+    const controller = new AbortController();
+    setIsLoadingActiveVisitHistory(true);
+    setActiveVisitHistoryError("");
+
+    loadPatientHistory(activeVisit.patient.email, activeVisit.id, controller.signal)
+      .then((history) => {
+        if (controller.signal.aborted) return;
+        setActiveVisitHistory(history);
+        if (!history?.progressSummary) setActiveVisitHistoryTab("VISIT_HISTORY");
+      })
+      .catch((historyError) => {
+        if (controller.signal.aborted) return;
+        setActiveVisitHistory(null);
+        setActiveVisitHistoryError(
+          historyError instanceof Error ? historyError.message : "Patient history lookup failed."
+        );
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setIsLoadingActiveVisitHistory(false);
+      });
+
+    return () => controller.abort();
+  }, [
+    doctor,
+    loadPatientHistory,
+    activeVisit?.id,
+    activeVisit?.patient.email,
+    activeVisit?.approvedAt,
+    visits.length
+  ]);
 
   useEffect(() => {
     activeVisitRef.current = activeVisit;
@@ -1090,6 +1538,15 @@ export default function Home() {
                 />
               </div>
 
+              <div className="mt-3">
+                <PatientHistoryBanner
+                  history={newVisitHistory}
+                  isLoading={isLoadingNewVisitHistory}
+                  error={newVisitHistoryError}
+                  onOpen={() => setIsNewVisitHistoryOpen(true)}
+                />
+              </div>
+
               <div className="mt-4 space-y-3">
                 <div>
                   <p className="mb-2 text-sm font-bold text-ink">Recording consent</p>
@@ -1253,6 +1710,14 @@ export default function Home() {
                   {isSaving ? "Saving" : lastSavedAt ? `Saved ${lastSavedAt}` : "Autosave ready"}
                 </span>
               </div>
+
+              <PatientHistoryPanel
+                history={activeVisitHistory}
+                isLoading={isLoadingActiveVisitHistory}
+                error={activeVisitHistoryError}
+                tab={activeVisitHistoryTab}
+                onTabChange={setActiveVisitHistoryTab}
+              />
 
               {activeVisit.status === "INTERRUPTED" && (
                 <div className="rounded-lg border border-amberline bg-clinic p-3">
@@ -1533,6 +1998,16 @@ export default function Home() {
           )}
         </section>
       </section>
+      <PatientHistoryModal
+        isOpen={isNewVisitHistoryOpen}
+        onClose={() => setIsNewVisitHistoryOpen(false)}
+        patientEmail={visitForm.patientEmail.trim().toLowerCase()}
+        history={newVisitHistory}
+        isLoading={isLoadingNewVisitHistory}
+        error={newVisitHistoryError}
+        tab={newVisitHistoryTab}
+        onTabChange={setNewVisitHistoryTab}
+      />
     </main>
   );
 }

@@ -1,7 +1,9 @@
 import { createHash } from "crypto";
+import { generatePatientProgressSummary } from "./azure-openai";
 import { prisma } from "./prisma";
 import { getDemoLoginEnabled } from "./server-config";
 import { actualModeForConsent, type ConsentStatus, type InputMode } from "./status";
+import type { PatientHistoryResponse, PatientProgressSummary, PatientProgressTrend, VisitWithPatient } from "./types";
 
 export function hashPassword(password: string) {
   return createHash("sha256").update(password).digest("hex");
@@ -12,6 +14,190 @@ export function publicDoctor(doctor: { id: string; name: string; email: string }
     id: doctor.id,
     name: doctor.name,
     email: doctor.email
+  };
+}
+
+const PROGRESS_SECTION_HEADINGS = [
+  "Patient concern",
+  "Key history from conversation",
+  "Doctor assessment/plan",
+  "Follow-up / instructions"
+];
+
+const PROGRESS_CACHE_SECTION_HEADINGS = [
+  "Key changes since last visit",
+  "Unresolved issues",
+  "Follow-up progress"
+];
+
+function cleanSummaryLine(line: string) {
+  return line.replace(/^[-*]\s*/, "").trim();
+}
+
+function extractSummarySection(summary: string, heading: string) {
+  const lines = summary.split(/\r?\n/);
+  const startIndex = lines.findIndex((line) => line.trim().toLowerCase() === heading.toLowerCase());
+  if (startIndex < 0) return [];
+
+  const sectionLines: string[] = [];
+  for (const line of lines.slice(startIndex + 1)) {
+    const cleaned = cleanSummaryLine(line);
+    if (!cleaned) continue;
+    if (PROGRESS_SECTION_HEADINGS.some((knownHeading) => cleaned.toLowerCase() === knownHeading.toLowerCase())) {
+      break;
+    }
+    sectionLines.push(cleaned);
+  }
+
+  return sectionLines;
+}
+
+function summaryItems(summary: string, maxItems = 4) {
+  const structuredItems = PROGRESS_SECTION_HEADINGS.flatMap((heading) => extractSummarySection(summary, heading));
+  const fallbackItems = summary
+    .split(/\r?\n+/)
+    .map(cleanSummaryLine)
+    .filter((line) => line && !PROGRESS_SECTION_HEADINGS.some((heading) => heading.toLowerCase() === line.toLowerCase()));
+
+  return (structuredItems.length ? structuredItems : fallbackItems).slice(0, maxItems);
+}
+
+function inferProgressTrend(latestSummary: string): PatientProgressTrend {
+  const text = latestSummary.toLowerCase();
+  const hasWorseningSignal = /\b(worse|worsening|deteriorat|increased|increasing|persistent|not improved|uncontrolled)\b/.test(text);
+  const hasImprovingSignal = /\b(improv|better|resolved|decreased|decreasing|controlled|less frequent)\b/.test(text);
+  const hasStableSignal = /\b(stable|unchanged|same as|no change)\b/.test(text);
+
+  if (hasWorseningSignal && !hasImprovingSignal) return "worsening";
+  if (hasImprovingSignal && !hasWorseningSignal) return "improving";
+  if (hasStableSignal) return "stable";
+  return "unclear";
+}
+
+function isProgressTrend(value: string): value is PatientProgressTrend {
+  return value === "improving" || value === "stable" || value === "worsening" || value === "unclear";
+}
+
+function buildProgressSummaryContent(input: {
+  trend: PatientProgressTrend;
+  keyChangesSinceLastVisit: string[];
+  unresolvedIssues: string[];
+  followUpProgress: string[];
+}) {
+  return [
+    `Trend: ${input.trend}`,
+    "",
+    "Key changes since last visit",
+    ...input.keyChangesSinceLastVisit.map((item) => `- ${item}`),
+    "",
+    "Unresolved issues",
+    ...input.unresolvedIssues.map((item) => `- ${item}`),
+    "",
+    "Follow-up progress",
+    ...input.followUpProgress.map((item) => `- ${item}`)
+  ].join("\n");
+}
+
+function extractProgressCacheSection(summaryContent: string, heading: string) {
+  const lines = summaryContent.split(/\r?\n/);
+  const startIndex = lines.findIndex((line) => line.trim().toLowerCase() === heading.toLowerCase());
+  if (startIndex < 0) return [];
+
+  const sectionLines: string[] = [];
+  for (const line of lines.slice(startIndex + 1)) {
+    const cleaned = cleanSummaryLine(line);
+    if (!cleaned) continue;
+    if (PROGRESS_CACHE_SECTION_HEADINGS.some((knownHeading) => cleaned.toLowerCase() === knownHeading.toLowerCase())) {
+      break;
+    }
+    sectionLines.push(cleaned);
+  }
+
+  return sectionLines;
+}
+
+function progressSummaryFromCache(cache: {
+  id: string;
+  patientId: string;
+  patientEmail: string;
+  approvedVisitCount: number;
+  summaryContent: string;
+  trendLabel: string;
+  generatedAt: Date;
+  updatedAt: Date;
+}): PatientProgressSummary {
+  return {
+    id: cache.id,
+    patientId: cache.patientId,
+    patientEmail: cache.patientEmail,
+    trend: isProgressTrend(cache.trendLabel) ? cache.trendLabel : "unclear",
+    approvedVisitCount: cache.approvedVisitCount,
+    summaryContent: cache.summaryContent,
+    generatedAt: cache.generatedAt,
+    updatedAt: cache.updatedAt,
+    keyChangesSinceLastVisit: extractProgressCacheSection(cache.summaryContent, "Key changes since last visit"),
+    unresolvedIssues: extractProgressCacheSection(cache.summaryContent, "Unresolved issues"),
+    followUpProgress: extractProgressCacheSection(cache.summaryContent, "Follow-up progress")
+  };
+}
+
+function latestApprovedVisitTime(approvedVisits: VisitWithPatient[]) {
+  const latestVisit = approvedVisits[0];
+  if (!latestVisit) return 0;
+  return new Date(latestVisit.approvedAt ?? latestVisit.updatedAt).getTime();
+}
+
+function isProgressCacheFresh(progressSummary: PatientProgressSummary | null, approvedVisits: VisitWithPatient[]) {
+  if (!progressSummary?.generatedAt) return false;
+  if (progressSummary.approvedVisitCount !== approvedVisits.length) return false;
+  return new Date(progressSummary.generatedAt).getTime() >= latestApprovedVisitTime(approvedVisits);
+}
+
+function buildProgressSummary(approvedVisits: VisitWithPatient[]): PatientProgressSummary | null {
+  if (approvedVisits.length < 2) return null;
+
+  const [latestVisit, previousVisit] = approvedVisits;
+  const latestSummary = latestVisit.approvedSummary?.trim() || "";
+  const previousSummary = previousVisit.approvedSummary?.trim() || "";
+  const previousSummaryLower = previousSummary.toLowerCase();
+
+  const latestItems = summaryItems(latestSummary, 8);
+  const changedItems = latestItems
+    .filter((item) => !previousSummaryLower.includes(item.toLowerCase()))
+    .slice(0, 4);
+
+  const unresolvedItems = latestItems
+    .filter((item) => /\b(pending|unresolved|continue|follow up|monitor|persistent|not documented|return|referral)\b/i.test(item))
+    .slice(0, 4);
+
+  const followUpItems = extractSummarySection(latestSummary, "Follow-up / instructions").slice(0, 4);
+  const trend = inferProgressTrend(latestSummary);
+  const keyChangesSinceLastVisit = changedItems.length
+    ? changedItems
+    : ["No clearly documented change was detected between the two latest approved summaries."];
+  const unresolvedIssues = unresolvedItems.length
+    ? unresolvedItems
+    : ["No unresolved issue is clearly documented in the latest approved summary."];
+  const followUpProgress = followUpItems.length
+    ? followUpItems
+    : ["No follow-up progress is clearly documented in the latest approved summary."];
+
+  return {
+    patientId: latestVisit.patientId,
+    patientEmail: latestVisit.patient.email,
+    trend,
+    approvedVisitCount: approvedVisits.length,
+    summaryContent: buildProgressSummaryContent({
+      trend,
+      keyChangesSinceLastVisit,
+      unresolvedIssues,
+      followUpProgress
+    }),
+    latestApprovedAt: latestVisit.approvedAt,
+    previousApprovedAt: previousVisit.approvedAt,
+    keyChangesSinceLastVisit,
+    unresolvedIssues,
+    followUpProgress
   };
 }
 
@@ -147,6 +333,191 @@ export async function listVisits(doctorId: string) {
     where: { doctorId },
     include: { patient: true },
     orderBy: { createdAt: "desc" }
+  });
+}
+
+async function listDoctorPatientVisitsByEmail(doctorId: string, patientEmail: string) {
+  const normalizedPatientEmail = patientEmail.trim().toLowerCase();
+  const patients = await prisma.patient.findMany({
+    where: { email: normalizedPatientEmail },
+    select: { id: true },
+    orderBy: { createdAt: "desc" }
+  });
+
+  const patientIds = patients.map((patient) => patient.id);
+  if (patientIds.length === 0) return [];
+
+  return prisma.visit.findMany({
+    where: {
+      doctorId,
+      patientId: { in: patientIds }
+    },
+    include: { patient: true },
+    orderBy: { createdAt: "desc" }
+  });
+}
+
+async function upsertProgressSummaryFromApprovedVisits(input: {
+  doctorId: string;
+  patientEmail: string;
+  approvedVisits: VisitWithPatient[];
+}) {
+  if (input.approvedVisits.length < 2) return null;
+
+  const normalizedPatientEmail = input.patientEmail.trim().toLowerCase();
+  const [latestVisit, previousVisit] = input.approvedVisits;
+  const generatedSummary = await generatePatientProgressSummary({
+    approvedSummaries: input.approvedVisits.map((visit) => ({
+      approvedAt: visit.approvedAt,
+      approvedSummary: visit.approvedSummary || ""
+    }))
+  });
+  const progressSummary: PatientProgressSummary = {
+    patientId: latestVisit.patientId,
+    patientEmail: normalizedPatientEmail,
+    trend: generatedSummary.trend,
+    approvedVisitCount: input.approvedVisits.length,
+    summaryContent: generatedSummary.summaryContent,
+    latestApprovedAt: latestVisit.approvedAt,
+    previousApprovedAt: previousVisit.approvedAt,
+    keyChangesSinceLastVisit: generatedSummary.keyChangesSinceLastVisit,
+    unresolvedIssues: generatedSummary.unresolvedIssues,
+    followUpProgress: generatedSummary.followUpProgress
+  };
+  const now = new Date();
+  try {
+    const cache = await prisma.patientProgressSummary.upsert({
+      where: {
+        doctorId_patientEmail: {
+          doctorId: input.doctorId,
+          patientEmail: normalizedPatientEmail
+        }
+      },
+      create: {
+        doctorId: input.doctorId,
+        patientId: latestVisit.patientId,
+        patientEmail: normalizedPatientEmail,
+        approvedVisitCount: progressSummary.approvedVisitCount,
+        summaryContent: progressSummary.summaryContent,
+        trendLabel: progressSummary.trend,
+        generatedAt: now
+      },
+      update: {
+        patientId: latestVisit.patientId,
+        approvedVisitCount: progressSummary.approvedVisitCount,
+        summaryContent: progressSummary.summaryContent,
+        trendLabel: progressSummary.trend,
+        generatedAt: now
+      }
+    });
+
+    return {
+      ...progressSummary,
+      id: cache.id,
+      patientEmail: cache.patientEmail,
+      generatedAt: cache.generatedAt,
+      updatedAt: cache.updatedAt
+    };
+  } catch (error) {
+    console.warn("[DoctorAI patient progress cache unavailable]", error);
+    return {
+      ...progressSummary,
+      generatedAt: now,
+      updatedAt: now
+    };
+  }
+}
+
+export async function getPatientHistoryForDoctor(input: {
+  doctorId: string;
+  patientEmail: string;
+  currentVisitId?: string | null;
+}): Promise<PatientHistoryResponse> {
+  const normalizedPatientEmail = input.patientEmail.trim().toLowerCase();
+  const visits = await listDoctorPatientVisitsByEmail(input.doctorId, normalizedPatientEmail);
+
+  const historyVisits = visits.map((visit) => ({
+    ...visit,
+    isCurrentVisit: visit.id === input.currentVisitId
+  }));
+
+  const approvedVisits = [...historyVisits]
+    .filter((visit) => Boolean(visit.approvedSummary?.trim()))
+    .sort((left, right) => {
+      const leftDate = new Date(left.approvedAt ?? left.updatedAt).getTime();
+      const rightDate = new Date(right.approvedAt ?? right.updatedAt).getTime();
+      return rightDate - leftDate;
+    });
+  const cachedProgressSummary =
+    approvedVisits.length >= 2
+      ? await getPatientProgressSummaryForDoctor({
+          doctorId: input.doctorId,
+          patientEmail: normalizedPatientEmail
+        })
+      : null;
+  const progressSummary =
+    approvedVisits.length < 2
+      ? null
+      : isProgressCacheFresh(cachedProgressSummary, approvedVisits)
+        ? cachedProgressSummary
+        : await upsertProgressSummaryFromApprovedVisits({
+            doctorId: input.doctorId,
+            patientEmail: normalizedPatientEmail,
+            approvedVisits
+          });
+
+  return {
+    patientEmail: normalizedPatientEmail,
+    totalVisitCount: historyVisits.length,
+    priorVisitCount: input.currentVisitId
+      ? historyVisits.filter((visit) => !visit.isCurrentVisit).length
+      : historyVisits.length,
+    approvedVisitCount: approvedVisits.length,
+    visits: historyVisits,
+    progressSummary
+  };
+}
+
+export async function getPatientProgressSummaryForDoctor(input: {
+  doctorId: string;
+  patientEmail: string;
+}) {
+  const normalizedPatientEmail = input.patientEmail.trim().toLowerCase();
+  try {
+    const cache = await prisma.patientProgressSummary.findUnique({
+      where: {
+        doctorId_patientEmail: {
+          doctorId: input.doctorId,
+          patientEmail: normalizedPatientEmail
+        }
+      }
+    });
+
+    return cache ? progressSummaryFromCache(cache) : null;
+  } catch (error) {
+    console.warn("[DoctorAI patient progress cache fetch failed]", error);
+    return null;
+  }
+}
+
+export async function generateOrUpdatePatientProgressSummaryForDoctor(input: {
+  doctorId: string;
+  patientEmail: string;
+}) {
+  const normalizedPatientEmail = input.patientEmail.trim().toLowerCase();
+  const visits = await listDoctorPatientVisitsByEmail(input.doctorId, normalizedPatientEmail);
+  const approvedVisits = visits
+    .filter((visit) => Boolean(visit.approvedSummary?.trim()))
+    .sort((left, right) => {
+      const leftDate = new Date(left.approvedAt ?? left.updatedAt).getTime();
+      const rightDate = new Date(right.approvedAt ?? right.updatedAt).getTime();
+      return rightDate - leftDate;
+    });
+
+  return upsertProgressSummaryFromApprovedVisits({
+    doctorId: input.doctorId,
+    patientEmail: normalizedPatientEmail,
+    approvedVisits
   });
 }
 

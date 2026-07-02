@@ -15,8 +15,9 @@ model DoctorAccount {
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
-  visits      Visit[]
-  usageEvents UsageEvent[]
+  visits            Visit[]
+  usageEvents       UsageEvent[]
+  progressSummaries PatientProgressSummary[]
 
   @@map("doctor_accounts")
 }
@@ -30,8 +31,10 @@ model Patient {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  visits Visit[]
+  visits            Visit[]
+  progressSummaries PatientProgressSummary[]
 
+  @@index([email])
   @@map("patients")
 }
 
@@ -64,10 +67,33 @@ model Visit {
   emailDeliveryLogs EmailDeliveryLog[]
 
   @@index([doctorId])
+  @@index([doctorId, patientId])
   @@index([doctorId, status])
+  @@index([doctorId, status, approvedAt])
   @@index([doctorId, createdAt])
   @@index([patientId])
   @@map("visits")
+}
+
+model PatientProgressSummary {
+  id                 String   @id @default(cuid())
+  doctorId           String   @map("doctor_id")
+  patientId          String   @map("patient_id")
+  patientEmail       String   @map("patient_email")
+  approvedVisitCount Int      @map("approved_visit_count")
+  summaryContent     String   @map("summary_content")
+  trendLabel         String   @default("unclear") @map("trend_label")
+  generatedAt        DateTime @default(now()) @map("generated_at")
+  updatedAt          DateTime @updatedAt @map("updated_at")
+
+  doctor  DoctorAccount @relation(fields: [doctorId], references: [id])
+  patient Patient       @relation(fields: [patientId], references: [id])
+
+  @@unique([doctorId, patientEmail])
+  @@index([patientId])
+  @@index([trendLabel])
+  @@index([generatedAt])
+  @@map("patient_progress_summaries")
 }
 
 model UsageEvent {
