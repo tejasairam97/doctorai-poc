@@ -249,7 +249,9 @@ Backend routes:
 - `POST /api/patient-progress`
   - generates or refreshes the cached progress summary when at least 2 approved visits exist
 
-The `patient_progress_summaries` table caches doctor-side progress summaries by doctor and patient email. It stores the representative patient row, approved visit count, generated summary content, trend label, and generation timestamp. Progress generation uses approved summaries only, never raw transcripts. When Azure OpenAI is configured, generation runs server-side with a lightweight progress prompt; otherwise the app uses a deterministic local fallback. The cache is refreshed when a newly approved visit changes the patient timeline. This phase does not add AI Insights Mode or a patient portal.
+The `patient_progress_summaries` table caches doctor-side AI Progress Summary Beta output by doctor and patient email. It stores the representative patient row, approved visit count, generated summary content, trend label, confidence/data-sufficiency label, cache version, and generation timestamp. Progress generation uses all approved summaries for the same doctor and patient email, never raw transcripts. When Azure OpenAI is configured, generation runs server-side with a longitudinal progress prompt; otherwise the app uses a conservative local fallback that clearly limits certainty. The cache is refreshed when a newly approved visit changes the patient timeline or when the progress prompt/cache version changes. This phase does not add AI Insights Mode or a patient portal.
+
+Progress Summary Beta output includes trend, confidence/data sufficiency, a chronological timeline snapshot, key changes since the last visit, persistent or unresolved issues, follow-up progress/adherence only when documented, and doctor review prompts. Exactly 2 approved visits are labeled as an early trend. If approved summaries do not contain comparable information, the trend should remain unclear rather than forcing improvement.
 
 ## Local Test Checklist
 

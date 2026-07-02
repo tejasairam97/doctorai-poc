@@ -83,6 +83,8 @@ model PatientProgressSummary {
   approvedVisitCount Int      @map("approved_visit_count")
   summaryContent     String   @map("summary_content")
   trendLabel         String   @default("unclear") @map("trend_label")
+  confidenceLabel    String   @default("unclear") @map("confidence_label")
+  cacheVersion       String   @default("legacy") @map("cache_version")
   generatedAt        DateTime @default(now()) @map("generated_at")
   updatedAt          DateTime @updatedAt @map("updated_at")
 
@@ -92,6 +94,7 @@ model PatientProgressSummary {
   @@unique([doctorId, patientEmail])
   @@index([patientId])
   @@index([trendLabel])
+  @@index([cacheVersion])
   @@index([generatedAt])
   @@map("patient_progress_summaries")
 }
