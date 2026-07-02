@@ -3,7 +3,7 @@ import { badRequest, ok, serverError } from "@/lib/http";
 import { isValidOtpEmail, normalizeOtpEmail, purposeForRoleContext } from "@/lib/otp";
 import { createDoctorLoginOtpChallenge } from "@/lib/store";
 
-const GENERIC_DOCTOR_OTP_MESSAGE = "If an account exists, a code has been sent.";
+const GENERIC_DOCTOR_OTP_MESSAGE = "If an account exists, check your email for a verification code.";
 
 function clientIpFromRequest(request: Request) {
   return (

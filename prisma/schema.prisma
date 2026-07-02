@@ -126,6 +126,10 @@ model EmailDeliveryLog {
   doctorId   String?  @map("doctor_id")
   recipient  String
   status     String
+  purpose    String?
+  provider   String?
+  providerStatus String? @map("provider_status")
+  messageId  String?  @map("message_id")
   providerId String?  @map("provider_id")
   error      String?
   createdAt  DateTime @default(now()) @map("created_at")
@@ -136,6 +140,7 @@ model EmailDeliveryLog {
   @@index([visitId])
   @@index([doctorId])
   @@index([status])
+  @@index([purpose])
   @@index([createdAt])
   @@map("email_delivery_logs")
 }

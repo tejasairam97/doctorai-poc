@@ -28,6 +28,10 @@ export async function POST(request: Request) {
         doctorId: doctor.id,
         recipient: doctor.email,
         status: emailResult.status,
+        purpose: "DOCTOR_TEST_EMAIL",
+        provider: emailResult.provider,
+        providerStatus: emailResult.providerStatus,
+        messageId: emailResult.messageId,
         providerId: emailResult.providerId
       });
 
@@ -41,6 +45,9 @@ export async function POST(request: Request) {
         doctorId: doctor.id,
         recipient: doctor.email,
         status: "FAILED",
+        purpose: "DOCTOR_TEST_EMAIL",
+        provider: "ACS_EMAIL",
+        providerStatus: "FAILED",
         error: error instanceof Error ? error.message : "Email delivery failed."
       });
 

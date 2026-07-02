@@ -1,35 +1,26 @@
-import { createHash, createHmac } from "crypto";
+import { EmailClient } from "@azure/communication-email";
 import { getAcsEmailEnv } from "./server-config";
 
 type EmailSendResult = {
   status: "SENT" | "SIMULATED";
+  provider: "ACS_EMAIL" | "LOCAL_SIMULATED";
+  providerStatus: string;
+  messageId?: string;
   providerId?: string;
 };
 
-type ParsedAcsConnectionString = {
-  endpoint: string;
-  accessKey: string;
-};
+function sanitizeEmailError(error: unknown) {
+  const parts = [
+    typeof error === "object" && error && "code" in error ? `code=${String(error.code)}` : "",
+    typeof error === "object" && error && "statusCode" in error ? `status=${String(error.statusCode)}` : "",
+    error instanceof Error ? `name=${error.name}` : "",
+    error instanceof Error ? `message=${error.message}` : "message=Unknown ACS email error"
+  ].filter(Boolean);
 
-function parseAcsConnectionString(connectionString: string): ParsedAcsConnectionString {
-  const parts = Object.fromEntries(
-    connectionString
-      .split(";")
-      .map((part) => part.trim())
-      .filter(Boolean)
-      .map((part) => {
-        const separatorIndex = part.indexOf("=");
-        return [part.slice(0, separatorIndex).toLowerCase(), part.slice(separatorIndex + 1)];
-      })
-  );
-
-  const endpoint = parts.endpoint;
-  const accessKey = parts.accesskey;
-  if (!endpoint || !accessKey) {
-    throw new Error("ACS_CONNECTION_STRING must include endpoint and accesskey.");
-  }
-
-  return { endpoint, accessKey };
+  return parts
+    .join(" ")
+    .replace(/[A-Za-z0-9+/=_-]{32,}/g, "[redacted]")
+    .slice(0, 500);
 }
 
 function escapeHtml(value: string) {
@@ -39,26 +30,6 @@ function escapeHtml(value: string) {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#39;");
-}
-
-function createAcsAuthorization(input: {
-  method: string;
-  url: URL;
-  body: string;
-  accessKey: string;
-  date: string;
-}) {
-  const contentHash = createHash("sha256").update(input.body).digest("base64");
-  const pathAndQuery = `${input.url.pathname}${input.url.search}`;
-  const stringToSign = `${input.method}\n${pathAndQuery}\n${input.date};${input.url.host};${contentHash}`;
-  const signature = createHmac("sha256", Buffer.from(input.accessKey, "base64"))
-    .update(stringToSign)
-    .digest("base64");
-
-  return {
-    contentHash,
-    authorization: `HMAC-SHA256 SignedHeaders=x-ms-date;host;x-ms-content-sha256&Signature=${signature}`
-  };
 }
 
 export function getEmailConfigStatus() {
@@ -80,60 +51,68 @@ async function sendAcsEmail(input: {
   html: string;
 }): Promise<EmailSendResult> {
   const env = getAcsEmailEnv();
+  const config = getEmailConfigStatus();
+
+  console.info("[DoctorAI email config]", {
+    acsConfigured: config.configured,
+    senderConfigured: !config.missing.senderAddress,
+    sendAttempted: Boolean(env.connectionString && env.senderAddress)
+  });
+
   if (!env.connectionString || !env.senderAddress) {
+    const simulatedId = `local-simulated-${Date.now()}`;
     return {
       status: "SIMULATED",
-      providerId: `local-simulated-${Date.now()}`
+      provider: "LOCAL_SIMULATED",
+      providerStatus: "SIMULATED",
+      messageId: simulatedId,
+      providerId: simulatedId
     };
   }
 
-  const { endpoint, accessKey } = parseAcsConnectionString(env.connectionString);
-  const url = new URL("/emails:send?api-version=2023-03-31", endpoint);
-  const body = JSON.stringify({
-    senderAddress: env.senderAddress,
-    content: {
-      subject: input.subject,
-      plainText: input.plainText,
-      html: input.html
-    },
-    recipients: {
-      to: [{ address: input.recipient, displayName: input.displayName }]
+  try {
+    const client = new EmailClient(env.connectionString);
+    const poller = await client.beginSend({
+      senderAddress: env.senderAddress,
+      content: {
+        subject: input.subject,
+        plainText: input.plainText,
+        html: input.html
+      },
+      recipients: {
+        to: [{ address: input.recipient, displayName: input.displayName }]
+      }
+    });
+
+    const result = await poller.pollUntilDone();
+    const providerStatus = String(result?.status || "unknown");
+    const messageId = result?.id;
+
+    console.info("[DoctorAI email provider result]", {
+      provider: "ACS_EMAIL",
+      providerStatus,
+      messageId: messageId ?? null
+    });
+
+    if (providerStatus.toLowerCase() !== "succeeded") {
+      throw new Error(`ACS Email send finished with status ${providerStatus}.`);
     }
-  });
-  const date = new Date().toUTCString();
-  const { authorization, contentHash } = createAcsAuthorization({
-    method: "POST",
-    url,
-    body,
-    accessKey,
-    date
-  });
 
-  const response = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Authorization": authorization,
-      "Content-Type": "application/json",
-      "x-ms-content-sha256": contentHash,
-      "x-ms-date": date
-    },
-    body
-  });
-
-  const providerId =
-    response.headers.get("operation-location") ||
-    response.headers.get("x-ms-request-id") ||
-    undefined;
-
-  if (!response.ok) {
-    const details = await response.text().catch(() => "");
-    throw new Error(`ACS Email send failed (${response.status}). ${details.slice(0, 240)}`.trim());
+    return {
+      status: "SENT",
+      provider: "ACS_EMAIL",
+      providerStatus,
+      messageId,
+      providerId: messageId
+    };
+  } catch (error) {
+    const safeError = sanitizeEmailError(error);
+    console.warn("[DoctorAI email provider failure]", {
+      provider: "ACS_EMAIL",
+      error: safeError
+    });
+    throw new Error(`ACS Email send failed. ${safeError}`);
   }
-
-  return {
-    status: "SENT",
-    providerId
-  };
 }
 
 export async function sendApprovedSummaryEmail(input: {

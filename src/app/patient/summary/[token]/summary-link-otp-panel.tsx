@@ -60,7 +60,7 @@ export function SummaryLinkOtpPanel({
       });
       setStep("CODE");
       setResendCooldown(OTP_RESEND_COOLDOWN_SECONDS);
-      setMessage("If this secure link is valid, a verification code has been sent.");
+      setMessage("If this secure link is valid, check your email for a verification code.");
     } catch (otpError) {
       setError(otpError instanceof Error ? otpError.message : "Unable to request a verification code.");
     } finally {

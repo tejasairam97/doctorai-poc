@@ -8,7 +8,7 @@ import {
 } from "@/lib/otp";
 import { createDoctorLoginOtpChallenge, createLoginOtpChallenge } from "@/lib/store";
 
-const GENERIC_OTP_REQUEST_MESSAGE = "If the email is eligible, a verification code has been sent.";
+const GENERIC_OTP_REQUEST_MESSAGE = "If the email is eligible, check your email for a verification code.";
 
 function clientIpFromRequest(request: Request) {
   return (
@@ -52,7 +52,7 @@ export async function POST(request: Request) {
 
       return ok({
         ok: true,
-        message: "If an account exists, a code has been sent."
+        message: "If an account exists, check your email for a verification code."
       });
     }
 

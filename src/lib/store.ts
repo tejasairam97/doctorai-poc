@@ -1272,6 +1272,10 @@ export async function recordEmailDelivery(input: {
   visitId: string;
   recipient: string;
   status: string;
+  purpose?: string;
+  provider?: string;
+  providerStatus?: string;
+  messageId?: string;
   providerId?: string;
   error?: string;
 }) {
@@ -1328,6 +1332,10 @@ export async function recordDoctorEmailDelivery(input: {
   doctorId: string;
   recipient: string;
   status: string;
+  purpose?: string;
+  provider?: string;
+  providerStatus?: string;
+  messageId?: string;
   providerId?: string;
   error?: string;
 }) {
@@ -1347,6 +1355,10 @@ export async function recordDoctorEmailDelivery(input: {
         visitId: null,
         recipient: input.recipient,
         status: input.status,
+        purpose: input.purpose ?? null,
+        provider: input.provider ?? null,
+        providerStatus: input.providerStatus ?? null,
+        messageId: input.messageId ?? input.providerId ?? null,
         providerId: input.providerId ?? null,
         error: input.error ?? null
       }
@@ -1359,6 +1371,10 @@ export async function recordDoctorEmailDelivery(input: {
         type: "DOCTOR_TEST_EMAIL_DELIVERY",
         metadata: JSON.stringify({
           status: input.status,
+          purpose: input.purpose,
+          provider: input.provider,
+          providerStatus: input.providerStatus,
+          messageId: input.messageId ?? input.providerId,
           providerId: input.providerId,
           error: input.error
         })
@@ -1373,6 +1389,10 @@ export async function recordAuthEmailDelivery(input: {
   doctorId?: string | null;
   recipient: string;
   status: string;
+  purpose?: string;
+  provider?: string;
+  providerStatus?: string;
+  messageId?: string;
   providerId?: string;
   error?: string;
   eventType?: string;
@@ -1384,6 +1404,10 @@ export async function recordAuthEmailDelivery(input: {
         visitId: null,
         recipient: input.recipient,
         status: input.status,
+        purpose: input.purpose ?? null,
+        provider: input.provider ?? null,
+        providerStatus: input.providerStatus ?? null,
+        messageId: input.messageId ?? input.providerId ?? null,
         providerId: input.providerId ?? null,
         error: input.error ?? null
       }
@@ -1397,6 +1421,10 @@ export async function recordAuthEmailDelivery(input: {
           type: input.eventType ?? "AUTH_EMAIL_DELIVERY",
           metadata: JSON.stringify({
             status: input.status,
+            purpose: input.purpose,
+            provider: input.provider,
+            providerStatus: input.providerStatus,
+            messageId: input.messageId ?? input.providerId,
             providerId: input.providerId,
             error: input.error
           })

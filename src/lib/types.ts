@@ -94,6 +94,10 @@ export type EmailDeliveryLog = {
   doctorId?: string | null;
   recipient: string;
   status: string;
+  purpose?: string | null;
+  provider?: string | null;
+  providerStatus?: string | null;
+  messageId?: string | null;
   providerId?: string | null;
   error?: string | null;
   createdAt: string | Date;

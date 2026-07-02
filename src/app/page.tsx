@@ -1177,7 +1177,7 @@ export default function Home() {
       setAuthForm({ ...authForm, email: normalizedEmail });
       setDoctorOtpStep("CODE");
       setDoctorOtpCooldown(CLIENT_OTP_RESEND_COOLDOWN_SECONDS);
-      setNotice(result.message || "If an account exists, a code has been sent.");
+      setNotice(result.message || "If an account exists, check your email for a verification code.");
     } catch (otpError) {
       setError(otpError instanceof Error ? otpError.message : "Unable to request a login code.");
     } finally {
@@ -1236,7 +1236,7 @@ export default function Home() {
       setResetForm({ ...resetForm, email: normalizedEmail });
       setResetPasswordStep("RESET");
       setResetOtpCooldown(CLIENT_OTP_RESEND_COOLDOWN_SECONDS);
-      setNotice(result.message || "If an account exists, a reset code has been sent.");
+      setNotice(result.message || "If an account exists, check your email for a reset code.");
     } catch (resetError) {
       setError(resetError instanceof Error ? resetError.message : "Unable to request a reset code.");
     } finally {
@@ -1531,7 +1531,7 @@ export default function Home() {
       setPatientEmail(normalizedEmail);
       setPatientOtpStep("CODE");
       setPatientOtpCooldown(CLIENT_OTP_RESEND_COOLDOWN_SECONDS);
-      setPatientMessage("If that email has access, a verification code has been sent.");
+      setPatientMessage("If that email has access, check your email for a verification code.");
     } catch (otpError) {
       setPatientError(otpError instanceof Error ? otpError.message : "Unable to request verification code.");
     } finally {
@@ -1906,7 +1906,7 @@ export default function Home() {
             ) : (
               <form onSubmit={confirmPasswordReset} className="space-y-4">
                 <div className="rounded-lg bg-clinic px-3 py-3 text-sm font-semibold text-ink">
-                  If an account exists, the reset code was sent to {resetForm.email.trim().toLowerCase()}.
+                  If an account exists, check {resetForm.email.trim().toLowerCase()} for the reset code.
                 </div>
                 <label className="block text-sm font-semibold text-ink">
                   Reset code
@@ -2063,7 +2063,7 @@ export default function Home() {
           ) : (
             <form onSubmit={verifyDoctorOtp} className="space-y-4">
               <div className="rounded-lg bg-clinic px-3 py-2 text-sm font-semibold text-ink">
-                If an account exists, the code was sent to {authForm.email.trim().toLowerCase()}.
+                If an account exists, check {authForm.email.trim().toLowerCase()} for the verification code.
               </div>
               <label className="block text-sm font-semibold text-ink">
                 Verification code

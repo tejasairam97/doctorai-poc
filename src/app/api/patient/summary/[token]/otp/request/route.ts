@@ -3,7 +3,7 @@ import { ok, serverError } from "@/lib/http";
 import { purposeForRoleContext } from "@/lib/otp";
 import { createLoginOtpChallenge, getPatientSummaryLinkOtpTarget } from "@/lib/store";
 
-const GENERIC_OTP_REQUEST_MESSAGE = "If this secure link is valid, a verification code has been sent.";
+const GENERIC_OTP_REQUEST_MESSAGE = "If this secure link is valid, check your email for a verification code.";
 
 function clientIpFromRequest(request: Request) {
   return (

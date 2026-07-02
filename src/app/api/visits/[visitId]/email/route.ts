@@ -46,6 +46,8 @@ export async function POST(
         visitId,
         recipient: visit.patient.email,
         status: "BLOCKED",
+        purpose: "SUMMARY_LINK",
+        providerStatus: "BLOCKED",
         error: "Patient email consent is required before sending a secure summary link."
       });
 
@@ -75,6 +77,10 @@ export async function POST(
         visitId,
         recipient: visit.patient.email,
         status: emailResult.status,
+        purpose: "SUMMARY_LINK",
+        provider: emailResult.provider,
+        providerStatus: emailResult.providerStatus,
+        messageId: emailResult.messageId,
         providerId: emailResult.providerId
       });
 
@@ -88,6 +94,9 @@ export async function POST(
         visitId,
         recipient: visit.patient.email,
         status: "FAILED",
+        purpose: "SUMMARY_LINK",
+        provider: "ACS_EMAIL",
+        providerStatus: "FAILED",
         error: error instanceof Error ? error.message : "Email delivery failed."
       });
 

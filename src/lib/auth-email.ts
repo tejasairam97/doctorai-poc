@@ -44,6 +44,10 @@ export async function sendAndLogOtpEmail(input: {
       doctorId: input.doctorId,
       recipient: input.recipient,
       status,
+      purpose: input.purpose,
+      provider: result.provider,
+      providerStatus: result.providerStatus,
+      messageId: result.messageId,
       providerId: result.providerId,
       eventType: "AUTH_OTP_EMAIL_DELIVERY"
     });
@@ -56,7 +60,14 @@ export async function sendAndLogOtpEmail(input: {
       recipient: maskEmailForLog(input.recipient)
     });
 
-    return { ok: true as const, status, providerId: result.providerId };
+    return {
+      ok: true as const,
+      status,
+      provider: result.provider,
+      providerStatus: result.providerStatus,
+      messageId: result.messageId,
+      providerId: result.providerId
+    };
   } catch (error) {
     const safeError = sanitizeEmailError(error);
     const status = `${prefix}_FAILED`;
@@ -65,6 +76,9 @@ export async function sendAndLogOtpEmail(input: {
       doctorId: input.doctorId,
       recipient: input.recipient,
       status,
+      purpose: input.purpose,
+      provider: "ACS_EMAIL",
+      providerStatus: "FAILED",
       error: safeError,
       eventType: "AUTH_OTP_EMAIL_DELIVERY"
     }).catch((logError) => {

@@ -37,12 +37,14 @@ export async function POST(request: Request) {
       return badRequest("Invalid input mode.");
     }
 
+    const patientEmail = body.patientEmail.trim().toLowerCase();
+
     const visit = await createDraftVisit({
       doctorId: body.doctorId,
       patient: {
         name: body.patientName,
         age: Number(body.patientAge),
-        email: body.patientEmail,
+        email: patientEmail,
         phone: body.patientPhone
       },
       consentStatus: body.consentStatus ?? "UNKNOWN",

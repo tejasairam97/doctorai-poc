@@ -64,6 +64,10 @@ export async function POST(
         visitId,
         recipient: approvedVisit.patient.email,
         status: emailResult.status,
+        purpose: "SUMMARY_LINK",
+        provider: emailResult.provider,
+        providerStatus: emailResult.providerStatus,
+        messageId: emailResult.messageId,
         providerId: emailResult.providerId
       });
 
@@ -80,6 +84,9 @@ export async function POST(
         visitId,
         recipient: approvedVisit.patient.email,
         status: "FAILED",
+        purpose: "SUMMARY_LINK",
+        provider: "ACS_EMAIL",
+        providerStatus: "FAILED",
         error: failureMessage
       }).catch((loggingError) => {
         console.warn("[DoctorAI email failure log failed]", loggingError);

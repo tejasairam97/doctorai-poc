@@ -3,7 +3,7 @@ import { badRequest, ok, serverError } from "@/lib/http";
 import { isValidOtpEmail, normalizeOtpEmail } from "@/lib/otp";
 import { createDoctorPasswordResetOtpChallenge } from "@/lib/store";
 
-const GENERIC_PASSWORD_RESET_MESSAGE = "If an account exists, a reset code has been sent.";
+const GENERIC_PASSWORD_RESET_MESSAGE = "If an account exists, check your email for a reset code.";
 
 function clientIpFromRequest(request: Request) {
   return (
