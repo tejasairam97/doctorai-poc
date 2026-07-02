@@ -208,23 +208,28 @@ export async function sendOtpEmail(input: {
   recipient: string;
   code: string;
   roleContext: "patient" | "doctor";
+  purpose?: "login" | "patient_portal" | "password_reset";
   expiresInMinutes: number;
 }): Promise<EmailSendResult> {
   const audience = input.roleContext === "patient" ? "patient portal" : "DoctorAI";
+  const action =
+    input.purpose === "password_reset"
+      ? "resetting your DoctorAI password"
+      : `finishing sign-in to ${audience}`;
   const plainText = [
     "Your DoctorAI verification code is:",
     "",
     input.code,
     "",
     `This code expires in ${input.expiresInMinutes} minutes.`,
-    `Use it only to finish signing in to ${audience}.`,
+    `Use it only for ${action}.`,
     "If you did not request this code, you can ignore this email."
   ].join("\n");
   const html = `
     <p>Your DoctorAI verification code is:</p>
     <p style="font-size:24px;font-weight:700;letter-spacing:4px">${escapeHtml(input.code)}</p>
     <p>This code expires in ${input.expiresInMinutes} minutes.</p>
-    <p>Use it only to finish signing in to ${escapeHtml(audience)}.</p>
+    <p>Use it only for ${escapeHtml(action)}.</p>
     <p>If you did not request this code, you can ignore this email.</p>
   `;
 

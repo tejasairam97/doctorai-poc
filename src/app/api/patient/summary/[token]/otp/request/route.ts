@@ -1,6 +1,6 @@
-import { sendOtpEmail } from "@/lib/email";
+import { sendAndLogOtpEmail } from "@/lib/auth-email";
 import { ok, serverError } from "@/lib/http";
-import { OTP_EXPIRES_IN_MINUTES, purposeForRoleContext } from "@/lib/otp";
+import { purposeForRoleContext } from "@/lib/otp";
 import { createLoginOtpChallenge, getPatientSummaryLinkOtpTarget } from "@/lib/store";
 
 const GENERIC_OTP_REQUEST_MESSAGE = "If this secure link is valid, a verification code has been sent.";
@@ -38,16 +38,11 @@ export async function POST(
     });
 
     if (challenge.code) {
-      await sendOtpEmail({
+      await sendAndLogOtpEmail({
         recipient: target.patientEmail,
         code: challenge.code,
         roleContext: "patient",
-        expiresInMinutes: OTP_EXPIRES_IN_MINUTES
-      }).catch((error) => {
-        console.warn(
-          "[DoctorAI secure summary OTP email delivery failed]",
-          error instanceof Error ? error.message : "Unknown OTP email delivery failure"
-        );
+        purpose: purposeForRoleContext("patient")
       });
     }
 

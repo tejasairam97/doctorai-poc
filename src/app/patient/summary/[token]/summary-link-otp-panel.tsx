@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 
 type SummaryLinkOtpPanelProps = {
@@ -9,6 +9,8 @@ type SummaryLinkOtpPanelProps = {
   expiresAtLabel: string;
   hasMismatchedSession: boolean;
 };
+
+const OTP_RESEND_COOLDOWN_SECONDS = 30;
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
@@ -37,9 +39,17 @@ export function SummaryLinkOtpPanel({
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [isBusy, setIsBusy] = useState(false);
+  const [resendCooldown, setResendCooldown] = useState(0);
 
-  async function requestOtp(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  useEffect(() => {
+    if (resendCooldown <= 0) return;
+    const timer = window.setInterval(() => {
+      setResendCooldown((current) => Math.max(0, current - 1));
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [resendCooldown]);
+
+  async function sendOtpCode() {
     setIsBusy(true);
     setError("");
     setMessage("");
@@ -49,12 +59,18 @@ export function SummaryLinkOtpPanel({
         method: "POST"
       });
       setStep("CODE");
+      setResendCooldown(OTP_RESEND_COOLDOWN_SECONDS);
       setMessage("If this secure link is valid, a verification code has been sent.");
     } catch (otpError) {
       setError(otpError instanceof Error ? otpError.message : "Unable to request a verification code.");
     } finally {
       setIsBusy(false);
     }
+  }
+
+  async function requestOtp(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    await sendOtpCode();
   }
 
   async function verifyOtp(event: FormEvent<HTMLFormElement>) {
@@ -136,6 +152,14 @@ export function SummaryLinkOtpPanel({
           <button
             className="w-full rounded-md border border-mint bg-white px-4 py-3 text-sm font-bold text-moss"
             type="button"
+            disabled={isBusy || resendCooldown > 0}
+            onClick={sendOtpCode}
+          >
+            {resendCooldown > 0 ? `Resend code in ${resendCooldown}s` : "Resend code"}
+          </button>
+          <button
+            className="w-full rounded-md border border-mint bg-white px-4 py-3 text-sm font-bold text-moss"
+            type="button"
             onClick={() => {
               setStep("READY");
               setCode("");
@@ -144,7 +168,7 @@ export function SummaryLinkOtpPanel({
             }}
             disabled={isBusy}
           >
-            Send a New Code
+            Start over
           </button>
         </form>
       )}

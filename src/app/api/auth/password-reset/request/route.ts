@@ -1,9 +1,9 @@
 import { sendAndLogOtpEmail } from "@/lib/auth-email";
 import { badRequest, ok, serverError } from "@/lib/http";
-import { isValidOtpEmail, normalizeOtpEmail, purposeForRoleContext } from "@/lib/otp";
-import { createDoctorLoginOtpChallenge } from "@/lib/store";
+import { isValidOtpEmail, normalizeOtpEmail } from "@/lib/otp";
+import { createDoctorPasswordResetOtpChallenge } from "@/lib/store";
 
-const GENERIC_DOCTOR_OTP_MESSAGE = "If an account exists, a code has been sent.";
+const GENERIC_PASSWORD_RESET_MESSAGE = "If an account exists, a reset code has been sent.";
 
 function clientIpFromRequest(request: Request) {
   return (
@@ -24,7 +24,7 @@ export async function POST(request: Request) {
       return badRequest("Enter a valid doctor email.");
     }
 
-    const challenge = await createDoctorLoginOtpChallenge({
+    const challenge = await createDoctorPasswordResetOtpChallenge({
       email,
       requestIp: clientIpFromRequest(request),
       userAgent: request.headers.get("user-agent")
@@ -35,14 +35,14 @@ export async function POST(request: Request) {
         recipient: email,
         code: challenge.code,
         roleContext: "doctor",
-        purpose: purposeForRoleContext("doctor"),
+        purpose: "password_reset",
         doctorId: challenge.doctor.id
       });
     }
 
     return ok({
       ok: true,
-      message: GENERIC_DOCTOR_OTP_MESSAGE
+      message: GENERIC_PASSWORD_RESET_MESSAGE
     });
   } catch (error) {
     return serverError(error);

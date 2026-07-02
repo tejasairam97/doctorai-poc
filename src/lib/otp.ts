@@ -2,11 +2,11 @@ import { createHmac, randomBytes, randomInt, timingSafeEqual } from "crypto";
 import { getAuthSecret } from "./server-config";
 
 export type OtpRoleContext = "patient" | "doctor";
-export type OtpPurpose = "login" | "patient_portal";
+export type OtpPurpose = "login" | "patient_portal" | "password_reset";
 
 export const OTP_EXPIRES_IN_MINUTES = 10;
 export const OTP_MAX_ATTEMPTS = 5;
-export const OTP_EMAIL_COOLDOWN_SECONDS = 60;
+export const OTP_EMAIL_COOLDOWN_SECONDS = 30;
 export const OTP_RATE_LIMIT_WINDOW_MINUTES = 15;
 export const OTP_MAX_EMAIL_REQUESTS_PER_WINDOW = 5;
 export const OTP_MAX_IP_REQUESTS_PER_WINDOW = 20;

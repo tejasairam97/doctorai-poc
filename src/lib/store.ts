@@ -335,7 +335,7 @@ export async function createDoctorLoginOtpChallenge(input: {
   const normalizedEmail = normalizeOtpEmail(input.email);
   const doctor = await getDoctorByEmail(normalizedEmail);
   if (!doctor) {
-    return { code: null, expiresAt: null, rateLimited: false, accountExists: false as const };
+    return { code: null, expiresAt: null, rateLimited: false, accountExists: false as const, doctor: null };
   }
 
   const challenge = await createLoginOtpChallenge({
@@ -348,7 +348,34 @@ export async function createDoctorLoginOtpChallenge(input: {
 
   return {
     ...challenge,
-    accountExists: true as const
+    accountExists: true as const,
+    doctor
+  };
+}
+
+export async function createDoctorPasswordResetOtpChallenge(input: {
+  email: string;
+  requestIp?: string | null;
+  userAgent?: string | null;
+}) {
+  const normalizedEmail = normalizeOtpEmail(input.email);
+  const doctor = await getDoctorByEmail(normalizedEmail);
+  if (!doctor) {
+    return { code: null, expiresAt: null, rateLimited: false, accountExists: false as const, doctor: null };
+  }
+
+  const challenge = await createLoginOtpChallenge({
+    email: normalizedEmail,
+    roleContext: "doctor",
+    purpose: "password_reset",
+    requestIp: input.requestIp,
+    userAgent: input.userAgent
+  });
+
+  return {
+    ...challenge,
+    accountExists: true as const,
+    doctor
   };
 }
 
@@ -434,6 +461,27 @@ export async function verifyDoctorLoginOtp(input: { email: string; code: string 
 
   if (!result.verified) return null;
   return doctor;
+}
+
+export async function resetDoctorPasswordWithOtp(input: { email: string; code: string; password: string }) {
+  const normalizedEmail = normalizeOtpEmail(input.email);
+  const doctor = await getDoctorByEmail(normalizedEmail);
+  if (!doctor) return null;
+
+  const result = await verifyLoginOtp({
+    email: normalizedEmail,
+    roleContext: "doctor",
+    purpose: "password_reset",
+    code: input.code
+  });
+
+  if (!result.verified) return null;
+
+  return prisma.doctorAccount.update({
+    where: { id: doctor.id },
+    data: { passwordHash: hashPassword(input.password) },
+    select: { id: true, name: true, email: true }
+  });
 }
 
 export async function getPatientSessionByToken(token: string | undefined | null) {
@@ -1318,6 +1366,45 @@ export async function recordDoctorEmailDelivery(input: {
     });
 
     return { doctor, emailDeliveryLog };
+  });
+}
+
+export async function recordAuthEmailDelivery(input: {
+  doctorId?: string | null;
+  recipient: string;
+  status: string;
+  providerId?: string;
+  error?: string;
+  eventType?: string;
+}) {
+  return prisma.$transaction(async (tx) => {
+    const emailDeliveryLog = await tx.emailDeliveryLog.create({
+      data: {
+        doctorId: input.doctorId ?? null,
+        visitId: null,
+        recipient: input.recipient,
+        status: input.status,
+        providerId: input.providerId ?? null,
+        error: input.error ?? null
+      }
+    });
+
+    if (input.doctorId) {
+      await tx.usageEvent.create({
+        data: {
+          doctorId: input.doctorId,
+          visitId: null,
+          type: input.eventType ?? "AUTH_EMAIL_DELIVERY",
+          metadata: JSON.stringify({
+            status: input.status,
+            providerId: input.providerId,
+            error: input.error
+          })
+        }
+      });
+    }
+
+    return emailDeliveryLog;
   });
 }
 

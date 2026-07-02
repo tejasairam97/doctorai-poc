@@ -6,7 +6,10 @@ import {
   CheckCircle2,
   ClipboardCheck,
   ClipboardList,
+  Eye,
+  EyeOff,
   FileText,
+  KeyRound,
   LogIn,
   Mail,
   Mic,
@@ -103,10 +106,14 @@ type RuntimeConfigResponse = {
 type EmailConsentStatus = "APPROVED" | "DECLINED" | "NOT_ASKED";
 type PatientHistoryTab = "VISIT_HISTORY" | "PROGRESS_SUMMARY";
 type PublicAccessMode = "doctor" | "patient";
+type AuthMode = "signup" | "login" | "forgot";
 type DoctorLoginMethod = "password" | "otp";
 type DoctorOtpStep = "EMAIL" | "CODE";
+type ResetPasswordStep = "EMAIL" | "RESET";
 type PatientOtpStep = "EMAIL" | "CODE";
 type PatientPortalTab = "VISITS" | "PROGRESS";
+
+const CLIENT_OTP_RESEND_COOLDOWN_SECONDS = 30;
 
 type AzureRecognizer = {
   recognizing?: (sender: unknown, event: { result?: { text?: string } }) => void;
@@ -141,6 +148,50 @@ async function api<T>(url: string, options?: RequestInit): Promise<T> {
     throw new Error(json?.error || `${response.status} ${response.statusText || "Request failed"}`.trim());
   }
   return json as T;
+}
+
+function PasswordInput({
+  label,
+  value,
+  onChange,
+  autoComplete,
+  placeholder,
+  minLength = 6
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  autoComplete?: string;
+  placeholder?: string;
+  minLength?: number;
+}) {
+  const [isVisible, setIsVisible] = useState(false);
+
+  return (
+    <label className="block text-sm font-semibold text-ink">
+      {label}
+      <span className="relative mt-2 block">
+        <input
+          required
+          minLength={minLength}
+          type={isVisible ? "text" : "password"}
+          value={value}
+          onChange={(event) => onChange(event.target.value)}
+          autoComplete={autoComplete}
+          placeholder={placeholder}
+          className="h-12 w-full rounded-lg border border-mint bg-white px-3 pr-12 outline-none focus:border-moss"
+        />
+        <button
+          type="button"
+          onClick={() => setIsVisible((current) => !current)}
+          aria-label={isVisible ? `Hide ${label.toLowerCase()}` : `Show ${label.toLowerCase()}`}
+          className="absolute right-2 top-1/2 flex h-9 w-9 -translate-y-1/2 items-center justify-center rounded-md text-ink/65 hover:bg-clinic hover:text-ink"
+        >
+          {isVisible ? <EyeOff size={18} aria-hidden="true" /> : <Eye size={18} aria-hidden="true" />}
+        </button>
+      </span>
+    </label>
+  );
 }
 
 function isLiveAllowed(visit: VisitWithPatient | null) {
@@ -612,15 +663,20 @@ export default function Home() {
     demoLogin: { enabled: false }
   });
   const [publicAccessMode, setPublicAccessMode] = useState<PublicAccessMode>("doctor");
-  const [authMode, setAuthMode] = useState<"signup" | "login">("signup");
+  const [authMode, setAuthMode] = useState<AuthMode>("login");
   const [authForm, setAuthForm] = useState({ name: "", email: "", password: "" });
   const [doctorLoginMethod, setDoctorLoginMethod] = useState<DoctorLoginMethod>("password");
   const [doctorOtpStep, setDoctorOtpStep] = useState<DoctorOtpStep>("EMAIL");
   const [doctorOtpCode, setDoctorOtpCode] = useState("");
+  const [doctorOtpCooldown, setDoctorOtpCooldown] = useState(0);
+  const [resetPasswordStep, setResetPasswordStep] = useState<ResetPasswordStep>("EMAIL");
+  const [resetForm, setResetForm] = useState({ email: "", code: "", password: "", confirmPassword: "" });
+  const [resetOtpCooldown, setResetOtpCooldown] = useState(0);
   const [patientSession, setPatientSession] = useState<PatientSession | null>(null);
   const [patientOtpStep, setPatientOtpStep] = useState<PatientOtpStep>("EMAIL");
   const [patientEmail, setPatientEmail] = useState("");
   const [patientOtpCode, setPatientOtpCode] = useState("");
+  const [patientOtpCooldown, setPatientOtpCooldown] = useState(0);
   const [patientPortalTab, setPatientPortalTab] = useState<PatientPortalTab>("VISITS");
   const [patientPortalVisits, setPatientPortalVisits] = useState<PatientPortalVisit[]>([]);
   const [patientPortalProgress, setPatientPortalProgress] = useState<PatientPortalProgressGroup[]>([]);
@@ -789,6 +845,18 @@ export default function Home() {
       setPatientError(portalError instanceof Error ? portalError.message : "Patient portal failed to load.");
     });
   }, [loadPatientPortalData, patientSession]);
+
+  useEffect(() => {
+    if (doctorOtpCooldown <= 0 && patientOtpCooldown <= 0 && resetOtpCooldown <= 0) return;
+
+    const timer = window.setInterval(() => {
+      setDoctorOtpCooldown((current) => Math.max(0, current - 1));
+      setPatientOtpCooldown((current) => Math.max(0, current - 1));
+      setResetOtpCooldown((current) => Math.max(0, current - 1));
+    }, 1000);
+
+    return () => window.clearInterval(timer);
+  }, [doctorOtpCooldown, patientOtpCooldown, resetOtpCooldown]);
 
   useEffect(() => {
     if (!doctor || !showNewVisit) {
@@ -1090,8 +1158,7 @@ export default function Home() {
     }
   }
 
-  async function requestDoctorOtp(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  async function sendDoctorOtpCode() {
     const normalizedEmail = authForm.email.trim().toLowerCase();
     if (!normalizedEmail.includes("@")) {
       setError("Enter a valid doctor email.");
@@ -1109,12 +1176,18 @@ export default function Home() {
       });
       setAuthForm({ ...authForm, email: normalizedEmail });
       setDoctorOtpStep("CODE");
+      setDoctorOtpCooldown(CLIENT_OTP_RESEND_COOLDOWN_SECONDS);
       setNotice(result.message || "If an account exists, a code has been sent.");
     } catch (otpError) {
       setError(otpError instanceof Error ? otpError.message : "Unable to request a login code.");
     } finally {
       setIsBusy(false);
     }
+  }
+
+  async function requestDoctorOtp(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    await sendDoctorOtpCode();
   }
 
   async function verifyDoctorOtp(event: FormEvent<HTMLFormElement>) {
@@ -1139,6 +1212,82 @@ export default function Home() {
       await enterDoctorApp(result.doctor, "Welcome back.");
     } catch (otpError) {
       setError(otpError instanceof Error ? otpError.message : "Verification failed.");
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
+  async function sendPasswordResetCode() {
+    const normalizedEmail = resetForm.email.trim().toLowerCase();
+    if (!normalizedEmail.includes("@")) {
+      setError("Enter a valid doctor email.");
+      return;
+    }
+
+    setError("");
+    setNotice("");
+    setIsBusy(true);
+
+    try {
+      const result = await api<{ ok: boolean; message: string }>("/api/auth/password-reset/request", {
+        method: "POST",
+        body: JSON.stringify({ email: normalizedEmail })
+      });
+      setResetForm({ ...resetForm, email: normalizedEmail });
+      setResetPasswordStep("RESET");
+      setResetOtpCooldown(CLIENT_OTP_RESEND_COOLDOWN_SECONDS);
+      setNotice(result.message || "If an account exists, a reset code has been sent.");
+    } catch (resetError) {
+      setError(resetError instanceof Error ? resetError.message : "Unable to request a reset code.");
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
+  async function requestPasswordReset(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    await sendPasswordResetCode();
+  }
+
+  async function confirmPasswordReset(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const normalizedEmail = resetForm.email.trim().toLowerCase();
+    const code = resetForm.code.trim();
+    const password = resetForm.password;
+
+    if (!/^\d{6}$/.test(code)) {
+      setError("Enter the 6-digit reset code.");
+      return;
+    }
+
+    if (password.length < 6) {
+      setError("Password must be at least 6 characters.");
+      return;
+    }
+
+    if (password !== resetForm.confirmPassword) {
+      setError("Passwords do not match.");
+      return;
+    }
+
+    setError("");
+    setNotice("");
+    setIsBusy(true);
+
+    try {
+      const result = await api<{ doctor: PublicDoctor; message: string }>("/api/auth/password-reset/confirm", {
+        method: "POST",
+        body: JSON.stringify({
+          email: normalizedEmail,
+          code,
+          password
+        })
+      });
+      setResetForm({ email: "", code: "", password: "", confirmPassword: "" });
+      setResetPasswordStep("EMAIL");
+      await enterDoctorApp(result.doctor, result.message || "Password reset. You are signed in.");
+    } catch (resetError) {
+      setError(resetError instanceof Error ? resetError.message : "Password reset failed.");
     } finally {
       setIsBusy(false);
     }
@@ -1360,8 +1509,7 @@ export default function Home() {
     }
   }
 
-  async function requestPatientOtp(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  async function sendPatientOtpCode() {
     const normalizedEmail = patientEmail.trim().toLowerCase();
     if (!normalizedEmail.includes("@")) {
       setPatientError("Enter a valid email.");
@@ -1382,12 +1530,18 @@ export default function Home() {
       });
       setPatientEmail(normalizedEmail);
       setPatientOtpStep("CODE");
+      setPatientOtpCooldown(CLIENT_OTP_RESEND_COOLDOWN_SECONDS);
       setPatientMessage("If that email has access, a verification code has been sent.");
     } catch (otpError) {
       setPatientError(otpError instanceof Error ? otpError.message : "Unable to request verification code.");
     } finally {
       setIsBusy(false);
     }
+  }
+
+  async function requestPatientOtp(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    await sendPatientOtpCode();
   }
 
   async function verifyPatientOtp(event: FormEvent<HTMLFormElement>) {
@@ -1655,7 +1809,13 @@ export default function Home() {
           </div>
 
           {publicAccessMode === "doctor" ? (
-            <>
+            <div className="space-y-5 rounded-lg bg-white p-4 shadow-soft">
+              <div>
+                <h2 className="text-xl font-bold text-ink">Doctor Access</h2>
+                <p className="mt-1 text-sm font-semibold text-ink/65">
+                  Sign in with your password or a one-time email code.
+                </p>
+              </div>
           <div className="grid grid-cols-2 gap-2 rounded-lg bg-white p-1 shadow-soft">
             {(["signup", "login"] as const).map((mode) => (
               <button
@@ -1704,7 +1864,108 @@ export default function Home() {
             </div>
           )}
 
-          {authMode === "signup" || doctorLoginMethod === "password" ? (
+          {authMode === "forgot" ? (
+            resetPasswordStep === "EMAIL" ? (
+              <form onSubmit={requestPasswordReset} className="space-y-4">
+                <div className="rounded-lg bg-clinic px-3 py-3 text-sm font-semibold text-ink">
+                  Enter your doctor account email. If an account exists, we will send a reset code.
+                </div>
+                <label className="block text-sm font-semibold text-ink">
+                  Doctor email
+                  <input
+                    required
+                    type="email"
+                    value={resetForm.email}
+                    onChange={(event) => setResetForm({ ...resetForm, email: event.target.value })}
+                    className="mt-2 h-12 w-full rounded-lg border border-mint bg-white px-3 outline-none focus:border-moss"
+                  />
+                </label>
+                {error && <p className="rounded-lg bg-coral px-3 py-2 text-sm font-semibold text-white">{error}</p>}
+                {notice && <p className="rounded-lg bg-mint px-3 py-2 text-sm font-semibold text-ink">{notice}</p>}
+                <button
+                  disabled={isBusy}
+                  className="flex h-12 w-full items-center justify-center gap-2 rounded-lg bg-moss font-semibold text-white"
+                >
+                  <KeyRound size={18} aria-hidden="true" />
+                  Send reset code
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAuthMode("login");
+                    setResetPasswordStep("EMAIL");
+                    setResetForm({ email: resetForm.email, code: "", password: "", confirmPassword: "" });
+                    setError("");
+                    setNotice("");
+                  }}
+                  className="h-11 w-full rounded-lg border border-mint bg-white text-sm font-bold text-ink"
+                >
+                  Back to login
+                </button>
+              </form>
+            ) : (
+              <form onSubmit={confirmPasswordReset} className="space-y-4">
+                <div className="rounded-lg bg-clinic px-3 py-3 text-sm font-semibold text-ink">
+                  If an account exists, the reset code was sent to {resetForm.email.trim().toLowerCase()}.
+                </div>
+                <label className="block text-sm font-semibold text-ink">
+                  Reset code
+                  <input
+                    required
+                    inputMode="numeric"
+                    maxLength={6}
+                    pattern="[0-9]{6}"
+                    value={resetForm.code}
+                    onChange={(event) =>
+                      setResetForm({ ...resetForm, code: event.target.value.replace(/\D/g, "").slice(0, 6) })
+                    }
+                    className="mt-2 h-12 w-full rounded-lg border border-mint bg-white px-3 text-center text-lg font-bold tracking-[0.25em] outline-none focus:border-moss"
+                  />
+                </label>
+                <PasswordInput
+                  label="New password"
+                  value={resetForm.password}
+                  onChange={(password) => setResetForm({ ...resetForm, password })}
+                  autoComplete="new-password"
+                />
+                <PasswordInput
+                  label="Confirm new password"
+                  value={resetForm.confirmPassword}
+                  onChange={(confirmPassword) => setResetForm({ ...resetForm, confirmPassword })}
+                  autoComplete="new-password"
+                />
+                {error && <p className="rounded-lg bg-coral px-3 py-2 text-sm font-semibold text-white">{error}</p>}
+                {notice && <p className="rounded-lg bg-mint px-3 py-2 text-sm font-semibold text-ink">{notice}</p>}
+                <button
+                  disabled={isBusy}
+                  className="flex h-12 w-full items-center justify-center gap-2 rounded-lg bg-moss font-semibold text-white"
+                >
+                  <KeyRound size={18} aria-hidden="true" />
+                  Reset password
+                </button>
+                <button
+                  type="button"
+                  disabled={isBusy || resetOtpCooldown > 0}
+                  onClick={sendPasswordResetCode}
+                  className="h-11 w-full rounded-lg border border-mint bg-white text-sm font-bold text-ink disabled:opacity-60"
+                >
+                  {resetOtpCooldown > 0 ? `Resend code in ${resetOtpCooldown}s` : "Resend code"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setResetPasswordStep("EMAIL");
+                    setResetForm({ ...resetForm, code: "", password: "", confirmPassword: "" });
+                    setError("");
+                    setNotice("");
+                  }}
+                  className="h-11 w-full rounded-lg border border-mint bg-white text-sm font-bold text-ink"
+                >
+                  Use a different email
+                </button>
+              </form>
+            )
+          ) : authMode === "signup" || doctorLoginMethod === "password" ? (
             <form onSubmit={submitAuth} className="space-y-4">
               {authMode === "signup" && (
                 <label className="block text-sm font-semibold text-ink">
@@ -1727,17 +1988,32 @@ export default function Home() {
                   className="mt-2 h-12 w-full rounded-lg border border-mint bg-white px-3 outline-none focus:border-moss"
                 />
               </label>
-              <label className="block text-sm font-semibold text-ink">
-                Password
-                <input
-                  required
-                  minLength={6}
-                  type="password"
-                  value={authForm.password}
-                  onChange={(event) => setAuthForm({ ...authForm, password: event.target.value })}
-                  className="mt-2 h-12 w-full rounded-lg border border-mint bg-white px-3 outline-none focus:border-moss"
-                />
-              </label>
+              <PasswordInput
+                label="Password"
+                value={authForm.password}
+                onChange={(password) => setAuthForm({ ...authForm, password })}
+                autoComplete={authMode === "signup" ? "new-password" : "current-password"}
+              />
+              {authMode === "login" && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAuthMode("forgot");
+                    setResetPasswordStep("EMAIL");
+                    setResetForm({
+                      email: authForm.email.trim().toLowerCase(),
+                      code: "",
+                      password: "",
+                      confirmPassword: ""
+                    });
+                    setError("");
+                    setNotice("");
+                  }}
+                  className="text-sm font-bold text-moss"
+                >
+                  Forgot password?
+                </button>
+              )}
               {runtimeConfig.demoLogin.enabled && runtimeConfig.demoLogin.email && runtimeConfig.demoLogin.password && (
                 <>
                   <button
@@ -1812,6 +2088,14 @@ export default function Home() {
               </button>
               <button
                 type="button"
+                disabled={isBusy || doctorOtpCooldown > 0}
+                onClick={sendDoctorOtpCode}
+                className="h-11 w-full rounded-lg border border-mint bg-white text-sm font-bold text-ink disabled:opacity-60"
+              >
+                {doctorOtpCooldown > 0 ? `Resend code in ${doctorOtpCooldown}s` : "Resend code"}
+              </button>
+              <button
+                type="button"
                 onClick={() => {
                   setDoctorOtpStep("EMAIL");
                   setDoctorOtpCode("");
@@ -1824,7 +2108,7 @@ export default function Home() {
               </button>
             </form>
           )}
-            </>
+            </div>
           ) : (
             <div className="rounded-lg bg-white p-4 shadow-soft">
               {!patientSession ? (
@@ -1876,6 +2160,14 @@ export default function Home() {
                       >
                         <LogIn size={18} aria-hidden="true" />
                         Verify
+                      </button>
+                      <button
+                        type="button"
+                        disabled={isBusy || patientOtpCooldown > 0}
+                        onClick={sendPatientOtpCode}
+                        className="h-11 w-full rounded-lg border border-mint bg-white text-sm font-bold text-ink disabled:opacity-60"
+                      >
+                        {patientOtpCooldown > 0 ? `Resend code in ${patientOtpCooldown}s` : "Resend code"}
                       </button>
                       <button
                         type="button"

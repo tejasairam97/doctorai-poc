@@ -1,10 +1,9 @@
-import { sendOtpEmail } from "@/lib/email";
+import { sendAndLogOtpEmail } from "@/lib/auth-email";
 import { badRequest, ok, serverError } from "@/lib/http";
 import {
   isOtpRoleContext,
   isValidOtpEmail,
   normalizeOtpEmail,
-  OTP_EXPIRES_IN_MINUTES,
   purposeForRoleContext
 } from "@/lib/otp";
 import { createDoctorLoginOtpChallenge, createLoginOtpChallenge } from "@/lib/store";
@@ -42,16 +41,12 @@ export async function POST(request: Request) {
       });
 
       if (challenge.accountExists && challenge.code) {
-        await sendOtpEmail({
+        await sendAndLogOtpEmail({
           recipient: email,
           code: challenge.code,
           roleContext,
-          expiresInMinutes: OTP_EXPIRES_IN_MINUTES
-        }).catch((error) => {
-          console.warn(
-            "[DoctorAI doctor OTP email delivery failed]",
-            error instanceof Error ? error.message : "Unknown doctor OTP email delivery failure"
-          );
+          purpose: purposeForRoleContext("doctor"),
+          doctorId: challenge.doctor.id
         });
       }
 
@@ -70,16 +65,11 @@ export async function POST(request: Request) {
     });
 
     if (challenge.code) {
-      await sendOtpEmail({
+      await sendAndLogOtpEmail({
         recipient: email,
         code: challenge.code,
         roleContext,
-        expiresInMinutes: OTP_EXPIRES_IN_MINUTES
-      }).catch((error) => {
-        console.warn(
-          "[DoctorAI OTP email delivery failed]",
-          error instanceof Error ? error.message : "Unknown OTP email delivery failure"
-        );
+        purpose: purposeForRoleContext(roleContext)
       });
     }
 
