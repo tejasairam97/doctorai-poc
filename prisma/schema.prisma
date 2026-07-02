@@ -18,6 +18,7 @@ model DoctorAccount {
   visits            Visit[]
   usageEvents       UsageEvent[]
   progressSummaries PatientProgressSummary[]
+  emailDeliveryLogs EmailDeliveryLog[]
 
   @@map("doctor_accounts")
 }
@@ -119,17 +120,56 @@ model UsageEvent {
 
 model EmailDeliveryLog {
   id         String   @id @default(cuid())
-  visitId    String   @map("visit_id")
+  visitId    String?  @map("visit_id")
+  doctorId   String?  @map("doctor_id")
   recipient  String
   status     String
   providerId String?  @map("provider_id")
   error      String?
   createdAt  DateTime @default(now()) @map("created_at")
 
-  visit Visit @relation(fields: [visitId], references: [id])
+  visit  Visit?         @relation(fields: [visitId], references: [id])
+  doctor DoctorAccount? @relation(fields: [doctorId], references: [id])
 
   @@index([visitId])
+  @@index([doctorId])
   @@index([status])
   @@index([createdAt])
   @@map("email_delivery_logs")
+}
+
+model LoginOtp {
+  id           String    @id @default(cuid())
+  email        String
+  roleContext  String    @map("role_context")
+  purpose      String
+  codeHash     String    @map("code_hash")
+  expiresAt    DateTime  @map("expires_at")
+  consumedAt   DateTime? @map("consumed_at")
+  attemptCount Int       @default(0) @map("attempt_count")
+  maxAttempts  Int       @default(5) @map("max_attempts")
+  requestIp    String?   @map("request_ip")
+  userAgent    String?   @map("user_agent")
+  createdAt    DateTime  @default(now()) @map("created_at")
+
+  @@index([email, roleContext, purpose, createdAt])
+  @@index([requestIp, createdAt])
+  @@index([expiresAt])
+  @@index([consumedAt])
+  @@map("login_otps")
+}
+
+model PatientSession {
+  id               String    @id @default(cuid())
+  email            String
+  sessionTokenHash String    @unique @map("session_token_hash")
+  expiresAt        DateTime  @map("expires_at")
+  revokedAt        DateTime? @map("revoked_at")
+  lastSeenAt       DateTime? @map("last_seen_at")
+  createdAt        DateTime  @default(now()) @map("created_at")
+
+  @@index([email])
+  @@index([expiresAt])
+  @@index([revokedAt])
+  @@map("patient_sessions")
 }

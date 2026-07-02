@@ -72,10 +72,12 @@ export function getEmailConfigStatus() {
   };
 }
 
-export async function sendApprovedSummaryEmail(input: {
-  patientName: string;
+async function sendAcsEmail(input: {
   recipient: string;
-  approvedSummary: string;
+  displayName: string;
+  subject: string;
+  plainText: string;
+  html: string;
 }): Promise<EmailSendResult> {
   const env = getAcsEmailEnv();
   if (!env.connectionString || !env.senderAddress) {
@@ -87,30 +89,15 @@ export async function sendApprovedSummaryEmail(input: {
 
   const { endpoint, accessKey } = parseAcsConnectionString(env.connectionString);
   const url = new URL("/emails:send?api-version=2023-03-31", endpoint);
-  const plainText = [
-    `Hello ${input.patientName},`,
-    "",
-    "Your clinician has approved the following visit summary:",
-    "",
-    input.approvedSummary,
-    "",
-    "Please contact your clinician's office with questions."
-  ].join("\n");
-  const html = `
-    <p>Hello ${escapeHtml(input.patientName)},</p>
-    <p>Your clinician has approved the following visit summary:</p>
-    <pre style="font-family:Arial,sans-serif;white-space:pre-wrap">${escapeHtml(input.approvedSummary)}</pre>
-    <p>Please contact your clinician's office with questions.</p>
-  `;
   const body = JSON.stringify({
     senderAddress: env.senderAddress,
     content: {
-      subject: "Your visit summary",
-      plainText,
-      html
+      subject: input.subject,
+      plainText: input.plainText,
+      html: input.html
     },
     recipients: {
-      to: [{ address: input.recipient, displayName: input.patientName }]
+      to: [{ address: input.recipient, displayName: input.displayName }]
     }
   });
   const date = new Date().toUTCString();
@@ -147,4 +134,95 @@ export async function sendApprovedSummaryEmail(input: {
     status: "SENT",
     providerId
   };
+}
+
+export async function sendApprovedSummaryEmail(input: {
+  patientName: string;
+  recipient: string;
+  approvedSummary: string;
+}): Promise<EmailSendResult> {
+  const plainText = [
+    `Hello ${input.patientName},`,
+    "",
+    "Your clinician has approved the following visit summary:",
+    "",
+    input.approvedSummary,
+    "",
+    "Please contact your clinician's office with questions."
+  ].join("\n");
+  const html = `
+    <p>Hello ${escapeHtml(input.patientName)},</p>
+    <p>Your clinician has approved the following visit summary:</p>
+    <pre style="font-family:Arial,sans-serif;white-space:pre-wrap">${escapeHtml(input.approvedSummary)}</pre>
+    <p>Please contact your clinician's office with questions.</p>
+  `;
+
+  return sendAcsEmail({
+    recipient: input.recipient,
+    displayName: input.patientName,
+    subject: "Your visit summary",
+    plainText,
+    html
+  });
+}
+
+export async function sendDoctorTestEmail(input: {
+  doctorName: string;
+  recipient: string;
+}): Promise<EmailSendResult> {
+  const plainText = [
+    `Hello ${input.doctorName},`,
+    "",
+    "This is a DoctorAI Azure Communication Services Email test.",
+    "If you received this message, outbound email is configured for your DoctorAI environment.",
+    "",
+    "No patient information is included in this test email."
+  ].join("\n");
+  const html = `
+    <p>Hello ${escapeHtml(input.doctorName)},</p>
+    <p>This is a DoctorAI Azure Communication Services Email test.</p>
+    <p>If you received this message, outbound email is configured for your DoctorAI environment.</p>
+    <p><strong>No patient information is included in this test email.</strong></p>
+  `;
+
+  return sendAcsEmail({
+    recipient: input.recipient,
+    displayName: input.doctorName,
+    subject: "DoctorAI email test",
+    plainText,
+    html
+  });
+}
+
+export async function sendOtpEmail(input: {
+  recipient: string;
+  code: string;
+  roleContext: "patient" | "doctor";
+  expiresInMinutes: number;
+}): Promise<EmailSendResult> {
+  const audience = input.roleContext === "patient" ? "patient portal" : "DoctorAI";
+  const plainText = [
+    "Your DoctorAI verification code is:",
+    "",
+    input.code,
+    "",
+    `This code expires in ${input.expiresInMinutes} minutes.`,
+    `Use it only to finish signing in to ${audience}.`,
+    "If you did not request this code, you can ignore this email."
+  ].join("\n");
+  const html = `
+    <p>Your DoctorAI verification code is:</p>
+    <p style="font-size:24px;font-weight:700;letter-spacing:4px">${escapeHtml(input.code)}</p>
+    <p>This code expires in ${input.expiresInMinutes} minutes.</p>
+    <p>Use it only to finish signing in to ${escapeHtml(audience)}.</p>
+    <p>If you did not request this code, you can ignore this email.</p>
+  `;
+
+  return sendAcsEmail({
+    recipient: input.recipient,
+    displayName: "DoctorAI user",
+    subject: "Your DoctorAI verification code",
+    plainText,
+    html
+  });
 }

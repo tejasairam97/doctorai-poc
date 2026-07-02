@@ -253,6 +253,16 @@ The `patient_progress_summaries` table caches doctor-side AI Progress Summary Be
 
 Progress Summary Beta output includes trend, confidence/data sufficiency, a chronological timeline snapshot, key changes since the last visit, persistent or unresolved issues, follow-up progress/adherence only when documented, and doctor review prompts. Exactly 2 approved visits are labeled as an early trend. If approved summaries do not contain comparable information, the trend should remain unclear rather than forcing improvement.
 
+## Email OTP Foundation
+
+DoctorAI includes an API-only email OTP foundation for future patient portal login and optional doctor OTP login. `POST /api/otp/request` accepts an email and `role_context` of `patient` or `doctor`, creates a short-lived hashed OTP challenge, applies basic email/IP throttling, and sends the code through the server-side ACS Email abstraction when configured. `POST /api/otp/verify` consumes a valid OTP and creates an httpOnly patient session cookie for patient role verification. `GET /api/patient/session` returns only the verified patient session shell, and `POST /api/patient/logout` revokes it.
+
+Raw OTP codes and raw patient session tokens are never stored in the database. Patient data is not exposed by these OTP routes; patient history or portal data should only be added behind successful patient session verification.
+
+## Patient Portal MVP
+
+The public page includes `Patient Access` for email OTP login. After OTP verification, patients can view a read-only portal with `My Visits` and `My Progress`. Patient APIs use only the verified patient session cookie as the source of truth and never accept a patient email query parameter after login. `GET /api/patient/visits` returns approved summaries only, grouped/labeled by doctor in the UI. `GET /api/patient/progress` returns simplified progress fields grouped by doctor when at least 2 approved visits exist. Raw transcripts, draft summaries, and doctor-only review prompts are not exposed to patients.
+
 ## Local Test Checklist
 
 - Doctor sign-up/login works, including demo login.
