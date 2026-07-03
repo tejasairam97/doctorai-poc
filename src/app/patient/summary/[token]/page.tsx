@@ -24,6 +24,14 @@ function PageShell({ children }: { children: ReactNode }) {
           DoctorAI
         </Link>
         {children}
+        <footer className="flex flex-wrap justify-center gap-4 py-2 text-xs font-bold text-ink/60">
+          <Link className="hover:text-moss" href="/privacy">
+            Privacy Policy
+          </Link>
+          <Link className="hover:text-moss" href="/terms">
+            Terms of Use
+          </Link>
+        </footer>
       </div>
     </main>
   );

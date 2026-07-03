@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -177,7 +178,6 @@ function PasswordInput({
     </label>
   );
 }
-
 function isLiveAllowed(visit: VisitWithPatient | null) {
   return visit?.consentStatus === "GRANTED";
 }
@@ -232,7 +232,6 @@ function StatusChip({ status }: { status: string }) {
     </span>
   );
 }
-
 function formatTimestamp(value?: string | Date | null) {
   if (!value) return "";
   return new Date(value).toLocaleString();
@@ -434,13 +433,13 @@ function PatientHistoryPanel({
               <div className="rounded-lg bg-clinic p-3">
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div>
-                    <p className="text-sm font-bold text-ink">AI Progress Summary — Beta</p>
+                    <p className="text-sm font-bold text-ink">AI Progress Summary &mdash; Beta</p>
                     <p className="mt-1 text-xs font-semibold text-ink/65">
                       Generated from approved visit summaries only. Doctor review required.
                     </p>
                     {progressSummary.approvedVisitCount === 2 && (
                       <p className="mt-2 text-xs font-bold text-moss">
-                        Early trend — only 2 approved visits available.
+                        Early trend &mdash; only 2 approved visits available.
                       </p>
                     )}
                   </div>
@@ -526,7 +525,7 @@ function PatientHistoryBanner({
         <div>
           <p className="text-sm font-bold text-ink">Previous visits found</p>
           <p className="mt-1 text-xs font-semibold text-ink/65">
-            {history.priorVisitCount} prior visit{history.priorVisitCount === 1 ? "" : "s"} ·{" "}
+            {history.priorVisitCount} prior visit{history.priorVisitCount === 1 ? "" : "s"} -{" "}
             {history.approvedVisitCount} approved
           </p>
         </div>
@@ -695,6 +694,7 @@ export default function Home() {
   const [unencryptedEmailConsentStatus, setUnencryptedEmailConsentStatus] =
     useState<EmailConsentStatus>("NOT_ASKED");
   const [showNewVisit, setShowNewVisit] = useState(false);
+  const [showAllVisits, setShowAllVisits] = useState(false);
   const [newVisitHistory, setNewVisitHistory] = useState<PatientHistoryResponse | null>(null);
   const [newVisitHistoryTab, setNewVisitHistoryTab] = useState<PatientHistoryTab>("VISIT_HISTORY");
   const [isNewVisitHistoryOpen, setIsNewVisitHistoryOpen] = useState(false);
@@ -723,6 +723,7 @@ export default function Home() {
   const recordingRef = useRef(false);
   const recognizerRef = useRef<AzureRecognizer | null>(null);
   const stoppingRecognizerRef = useRef(false);
+  const activeWorkspaceRef = useRef<HTMLElement | null>(null);
 
   const liveAllowed = isLiveAllowed(activeVisit);
   const microphoneAllowed = canUseMicrophoneForMode(activeMode, activeVisit);
@@ -765,6 +766,17 @@ export default function Home() {
     }),
     [visits]
   );
+  const sortedVisits = useMemo(
+    () =>
+      [...visits].sort(
+        (left, right) =>
+          new Date(right.updatedAt || right.createdAt).getTime() -
+          new Date(left.updatedAt || left.createdAt).getTime()
+      ),
+    [visits]
+  );
+  const recentVisits = sortedVisits.slice(0, 3);
+  const visibleDashboardVisits = showAllVisits ? sortedVisits : recentVisits;
 
   const loadVisits = useCallback(
     async (doctorId: string, keepActiveVisitId?: string) => {
@@ -1107,6 +1119,8 @@ export default function Home() {
   async function selectVisit(visit: VisitWithPatient) {
     await stopAzureRecognizer();
     setIsRecording(false);
+    setShowNewVisit(false);
+    setShowAllVisits(false);
     setActiveVisit(visit);
     const nextMode =
       visit.inputModeActual === "LIVE_CONVERSATION" && visit.consentStatus === "GRANTED"
@@ -1129,13 +1143,16 @@ export default function Home() {
     setMicError("");
     setNotice("");
     setError("");
+    window.setTimeout(() => activeWorkspaceRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 0);
   }
 
   async function enterDoctorApp(nextDoctor: PublicDoctor, message: string) {
     setDoctor(nextDoctor);
     window.localStorage.setItem("doctorai.doctor", JSON.stringify(nextDoctor));
-    const nextVisits = await loadVisits(nextDoctor.id);
-    if (nextVisits[0]) await selectVisit(nextVisits[0]);
+    await loadVisits(nextDoctor.id);
+    setActiveVisit(null);
+    setShowNewVisit(false);
+    setShowAllVisits(false);
     setNotice(message);
   }
 
@@ -2345,6 +2362,14 @@ export default function Home() {
               )}
             </div>
           )}
+          <footer className="flex flex-wrap justify-center gap-4 px-2 pb-2 text-xs font-bold text-ink/60">
+            <Link className="hover:text-moss" href="/privacy">
+              Privacy Policy
+            </Link>
+            <Link className="hover:text-moss" href="/terms">
+              Terms of Use
+            </Link>
+          </footer>
         </section>
       </main>
     );
@@ -2385,34 +2410,38 @@ export default function Home() {
         </div>
       </header>
 
-      <button
-        type="button"
-        onClick={() => setShowNewVisit((current) => !current)}
-        className="mt-5 flex min-h-14 w-full items-center justify-center gap-2 rounded-2xl bg-moss px-5 text-base font-bold text-white shadow-soft"
-      >
-        <Plus size={20} aria-hidden="true" />
-        New Visit
-      </button>
+      {!activeVisit && !showNewVisit && (
+        <>
+          <button
+            type="button"
+            onClick={() => setShowNewVisit(true)}
+            className="mt-5 flex min-h-14 w-full items-center justify-center gap-2 rounded-2xl bg-moss px-5 text-base font-bold text-white shadow-soft"
+          >
+            <Plus size={20} aria-hidden="true" />
+            New Visit
+          </button>
 
-      <div className="mt-4 grid grid-cols-3 gap-2">
-        <div className="rounded-2xl bg-white p-3 shadow-soft">
-          <p className="text-xs font-bold uppercase text-moss">Needs Review</p>
-          <p className="mt-1 text-xl font-bold text-ink">{dashboardStats.needsReview}</p>
-        </div>
-        <div className="rounded-2xl bg-white p-3 shadow-soft">
-          <p className="text-xs font-bold uppercase text-moss">Approved</p>
-          <p className="mt-1 text-xl font-bold text-ink">{dashboardStats.approved}</p>
-        </div>
-        <div className="rounded-2xl bg-white p-3 shadow-soft">
-          <p className="text-xs font-bold uppercase text-moss">Shared</p>
-          <p className="mt-1 text-xl font-bold text-ink">{dashboardStats.emailed}</p>
-        </div>
-      </div>
+          <div className="mt-4 grid grid-cols-3 gap-2">
+            <div className="rounded-2xl bg-white p-3 shadow-soft">
+              <p className="text-xs font-bold uppercase text-moss">Needs Review</p>
+              <p className="mt-1 text-xl font-bold text-ink">{dashboardStats.needsReview}</p>
+            </div>
+            <div className="rounded-2xl bg-white p-3 shadow-soft">
+              <p className="text-xs font-bold uppercase text-moss">Approved</p>
+              <p className="mt-1 text-xl font-bold text-ink">{dashboardStats.approved}</p>
+            </div>
+            <div className="rounded-2xl bg-white p-3 shadow-soft">
+              <p className="text-xs font-bold uppercase text-moss">Shared</p>
+              <p className="mt-1 text-xl font-bold text-ink">{dashboardStats.emailed}</p>
+            </div>
+          </div>
 
-      {dashboardStats.interrupted > 0 && (
-        <div className="mt-3 rounded-2xl border border-amberline bg-white px-4 py-3 text-sm font-semibold text-ink">
-          {dashboardStats.interrupted} interrupted visit{dashboardStats.interrupted === 1 ? "" : "s"} need attention.
-        </div>
+          {dashboardStats.interrupted > 0 && (
+            <div className="mt-3 rounded-2xl border border-amberline bg-white px-4 py-3 text-sm font-semibold text-ink">
+              {dashboardStats.interrupted} interrupted visit{dashboardStats.interrupted === 1 ? "" : "s"} need attention.
+            </div>
+          )}
+        </>
       )}
 
       {(notice || error) && (
@@ -2425,12 +2454,13 @@ export default function Home() {
         </div>
       )}
 
-      <section className="grid gap-5 py-5 xl:grid-cols-[360px_1fr]">
-        <section className="space-y-5">
+      <section className="py-5">
+        {!activeVisit && (
+          <section className="mx-auto max-w-3xl space-y-5">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
-              <p className="text-sm font-semibold text-moss">Work queue</p>
-              <h2 className="text-2xl font-bold text-ink">Visits</h2>
+              <p className="text-sm font-semibold text-moss">{showNewVisit ? "New Visit" : "Dashboard"}</p>
+              <h2 className="text-2xl font-bold text-ink">{showNewVisit ? "Patient details" : "Recent visits"}</h2>
             </div>
           </div>
 
@@ -2552,76 +2582,125 @@ export default function Home() {
                 <ClipboardList size={17} aria-hidden="true" />
                 Create draft visit
               </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowNewVisit(false);
+                  setVisitForm(emptyVisitForm);
+                  setNewVisitHistory(null);
+                  setNewVisitHistoryError("");
+                }}
+                className="mt-3 min-h-11 w-full rounded-xl border border-mint bg-white px-4 text-sm font-bold text-ink"
+              >
+                Cancel and return to dashboard
+              </button>
             </form>
           )}
 
-          <div className="space-y-3">
-            {visits.length === 0 ? (
-            <div className="rounded-2xl bg-white p-6 text-center shadow-soft">
-                <ClipboardList className="mx-auto text-moss" size={32} aria-hidden="true" />
-                <p className="mt-3 font-bold text-ink">No visits yet</p>
-                <p className="mt-1 text-sm text-ink/60">Tap New Visit to start documentation.</p>
-              </div>
-            ) : (
-              visits.map((visit) => (
-                <button
-                  key={visit.id}
-                  onClick={() => selectVisit(visit)}
-                  className={`w-full rounded-2xl border bg-white p-4 text-left shadow-soft ${
-                    activeVisit?.id === visit.id ? "border-moss" : "border-transparent"
-                  }`}
-                >
-                  <div className="flex flex-wrap items-start justify-between gap-3">
-                    <div>
-                      <h3 className="font-bold text-ink">{visit.patient.name}</h3>
-                      <p className="text-sm text-ink/70">
-                        Age {visit.patient.age} - {visit.patient.email}
-                      </p>
-                    </div>
-                    <div className="flex flex-wrap justify-end gap-1">
-                      {buildVisitChips(visit, activeVisit?.id === visit.id && isRecording).map((status) => (
-                        <StatusChip key={status} status={status} />
-                      ))}
-                    </div>
-                  </div>
-                  <div className="mt-3 grid gap-1 text-sm text-ink/75">
-                    <p>Consent: {labelFromCode(visit.consentStatus)}</p>
-                    <p>{modeLabel(visit.inputModeActual)}</p>
-                  </div>
-                  <div className="mt-3 flex items-center justify-between gap-3 rounded-xl bg-clinic px-3 py-2">
-                    <span className="text-xs font-semibold text-ink/65">{formatTimestamp(visit.updatedAt || visit.createdAt)}</span>
-                    <span className="text-sm font-bold text-moss">{visitActionLabel(visit)}</span>
-                  </div>
-                </button>
-              ))
-            )}
-          </div>
-        </section>
-
-        <section className="min-h-[640px] rounded-2xl bg-white p-4 shadow-soft sm:p-5">
-          {!activeVisit ? (
-            <div className="flex min-h-[560px] items-center justify-center text-center">
-              <div>
-                <ClipboardList className="mx-auto text-moss" size={36} aria-hidden="true" />
-                <p className="mt-3 text-lg font-bold text-ink">Create or select a visit</p>
-              </div>
+          {!showNewVisit && (
+            <div className="space-y-3">
+              {visits.length === 0 ? (
+                <div className="rounded-2xl bg-white p-6 text-center shadow-soft">
+                  <ClipboardList className="mx-auto text-moss" size={32} aria-hidden="true" />
+                  <p className="mt-3 font-bold text-ink">No visits yet.</p>
+                  <p className="mt-1 text-sm text-ink/60">Tap New Visit to start documentation.</p>
+                </div>
+              ) : (
+                <>
+                  {visibleDashboardVisits.map((visit) => (
+                    <button
+                      key={visit.id}
+                      onClick={() => selectVisit(visit)}
+                      className="w-full rounded-2xl border border-transparent bg-white p-4 text-left shadow-soft"
+                    >
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div>
+                          <h3 className="font-bold text-ink">{visit.patient.name}</h3>
+                          <p className="text-sm text-ink/70">
+                            Age {visit.patient.age} - {visit.patient.email}
+                          </p>
+                        </div>
+                        <div className="flex flex-wrap justify-end gap-1">
+                          {buildVisitChips(visit, false).map((status) => (
+                            <StatusChip key={status} status={status} />
+                          ))}
+                        </div>
+                      </div>
+                      <div className="mt-3 grid gap-1 text-sm text-ink/75">
+                        <p>Consent: {labelFromCode(visit.consentStatus)}</p>
+                        <p>{modeLabel(visit.inputModeActual)}</p>
+                      </div>
+                      <div className="mt-3 flex items-center justify-between gap-3 rounded-xl bg-clinic px-3 py-2">
+                        <span className="text-xs font-semibold text-ink/65">
+                          {formatTimestamp(visit.updatedAt || visit.createdAt)}
+                        </span>
+                        <span className="text-sm font-bold text-moss">{visitActionLabel(visit)}</span>
+                      </div>
+                    </button>
+                  ))}
+                  {sortedVisits.length > 3 && (
+                    <button
+                      type="button"
+                      onClick={() => setShowAllVisits((current) => !current)}
+                      className="min-h-11 w-full rounded-xl border border-mint bg-white px-4 text-sm font-bold text-moss"
+                    >
+                      {showAllVisits ? "Show fewer" : "Show all visits"}
+                    </button>
+                  )}
+                </>
+              )}
             </div>
-          ) : (
+          )}
+          </section>
+        )}
+
+        {activeVisit && (
+          <section ref={activeWorkspaceRef} className="min-h-[640px] rounded-2xl bg-white p-4 shadow-soft sm:p-5">
             <div className="space-y-5 pb-3">
+              <button
+                type="button"
+                disabled={recordingStage === "recording" || recordingStage === "paused" || isRecording}
+                onClick={async () => {
+                  try {
+                    if (dirtyRef.current) {
+                      await saveTranscript(
+                        activeMode === "DOCTOR_SELF_SUMMARY" && !isRecording ? "READY_FOR_DOCUMENTATION" : activeVisit.status,
+                        activeMode
+                      );
+                    }
+                    setActiveVisit(null);
+                    setNotice("Back to dashboard.");
+                    setError("");
+                  } catch (saveError) {
+                    setError(saveError instanceof Error ? saveError.message : "Draft save failed.");
+                  }
+                }}
+                className="min-h-10 rounded-xl border border-mint bg-white px-3 text-sm font-bold text-moss disabled:text-ink/45"
+                title={
+                  recordingStage === "recording" || recordingStage === "paused" || isRecording
+                    ? "Stop the recording before leaving this visit."
+                    : "Back to dashboard"
+                }
+              >
+                Back to dashboard
+              </button>
+              {(recordingStage === "recording" || recordingStage === "paused" || isRecording) && (
+                <p className="rounded-xl bg-clinic px-3 py-2 text-xs font-semibold text-ink/70">
+                  Stop the recording before leaving this visit.
+                </p>
+              )}
               <div className="sticky top-[76px] z-10 rounded-2xl border border-mint bg-white/95 p-4 shadow-soft backdrop-blur">
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div>
-                    <p className="text-sm font-semibold text-moss">
-                      {activeVisit.patient.name}, age {activeVisit.patient.age}
-                    </p>
-                    <h2 className="text-2xl font-bold text-ink">{activeStep}</h2>
+                    <p className="text-sm font-semibold text-moss">Current visit</p>
+                    <h2 className="text-2xl font-bold text-ink">{activeVisit.patient.name}, age {activeVisit.patient.age}</h2>
                     <div className="mt-2 flex flex-wrap gap-1">
                       {buildVisitChips(activeVisit, isRecording).map((status) => (
                         <StatusChip key={status} status={status} />
                       ))}
                     </div>
                     <p className="mt-2 text-sm text-ink/70">
-                      Consent: {labelFromCode(activeVisit.consentStatus)} · {modeLabel(activeMode)}
+                      {activeVisit.patient.email} - Consent: {labelFromCode(activeVisit.consentStatus)} - {modeLabel(activeMode)}
                     </p>
                   </div>
                   <span className="flex min-h-10 items-center gap-2 rounded-xl bg-clinic px-3 text-sm font-bold text-ink">
@@ -2816,7 +2895,7 @@ export default function Home() {
                   }
                 />
                 <span className="mt-2 block text-xs font-semibold text-moss">
-                  {lastSavedAt ? `Saved just now · ${lastSavedAt}` : "Saved automatically every 4 seconds"}
+                  {lastSavedAt ? `Saved just now - ${lastSavedAt}` : "Saved automatically every 4 seconds"}
                 </span>
               </label>
 
@@ -3004,8 +3083,8 @@ export default function Home() {
                 </span>
               </div>
             </div>
-          )}
-        </section>
+          </section>
+        )}
       </section>
       <PatientHistoryModal
         isOpen={isNewVisitHistoryOpen}
