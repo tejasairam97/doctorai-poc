@@ -181,34 +181,6 @@ export async function sendApprovedSummaryEmail(input: {
   });
 }
 
-export async function sendDoctorTestEmail(input: {
-  doctorName: string;
-  recipient: string;
-}): Promise<EmailSendResult> {
-  const plainText = [
-    `Hello ${input.doctorName},`,
-    "",
-    "This is a DoctorAI Azure Communication Services Email test.",
-    "If you received this message, outbound email is configured for your DoctorAI environment.",
-    "",
-    "No patient information is included in this test email."
-  ].join("\n");
-  const html = `
-    <p>Hello ${escapeHtml(input.doctorName)},</p>
-    <p>This is a DoctorAI Azure Communication Services Email test.</p>
-    <p>If you received this message, outbound email is configured for your DoctorAI environment.</p>
-    <p><strong>No patient information is included in this test email.</strong></p>
-  `;
-
-  return sendAcsEmail({
-    recipient: input.recipient,
-    displayName: input.doctorName,
-    subject: "DoctorAI email test",
-    plainText,
-    html
-  });
-}
-
 export async function sendOtpEmail(input: {
   recipient: string;
   code: string;

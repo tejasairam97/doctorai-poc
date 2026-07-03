@@ -2,7 +2,6 @@
 
 import {
   AlertTriangle,
-  BarChart3,
   CheckCircle2,
   ClipboardCheck,
   ClipboardList,
@@ -33,7 +32,6 @@ import type {
   PatientPortalProgressGroup,
   PatientPortalVisit,
   PatientSession,
-  UsageEvent,
   VisitWithPatient
 } from "@/lib/types";
 
@@ -45,6 +43,7 @@ type PublicDoctor = {
 
 type MicState = "idle" | "prompting" | "listening" | "paused" | "denied" | "azure_unavailable" | "error";
 type SummaryState = "idle" | "generating" | "ready" | "approving" | "approved" | "error";
+type RecordingStage = "ready" | "recording" | "paused" | "stopped";
 
 type SpeechTokenResponse = {
   token: string;
@@ -76,13 +75,6 @@ type EmailResponse = {
   emailError?: string;
 };
 
-type EmailTestResponse = {
-  emailDeliveryLog: EmailDeliveryLog;
-  emailSimulated?: boolean;
-  acsConfigured: boolean;
-  emailError?: string;
-};
-
 type PatientSessionResponse = {
   patientSession: PatientSession | null;
 };
@@ -93,14 +85,6 @@ type PatientVisitsResponse = {
 
 type PatientProgressResponse = {
   progress: PatientPortalProgressGroup[];
-};
-
-type RuntimeConfigResponse = {
-  demoLogin: {
-    enabled: boolean;
-    email?: string;
-    password?: string;
-  };
 };
 
 type EmailConsentStatus = "APPROVED" | "DECLINED" | "NOT_ASKED";
@@ -200,6 +184,24 @@ function isLiveAllowed(visit: VisitWithPatient | null) {
 
 function canUseMicrophoneForMode(mode: InputMode, visit: VisitWithPatient | null) {
   return mode === "DOCTOR_SELF_SUMMARY" || isLiveAllowed(visit);
+}
+
+function modeLabel(mode: InputMode | string) {
+  return mode === "LIVE_CONVERSATION" ? "Record live conversation" : "Dictate doctor summary";
+}
+
+function visitActionLabel(visit: VisitWithPatient) {
+  if (visit.approvedSummary?.trim()) return "View Approved";
+  if (visit.draftSummary?.trim()) return "Review Summary";
+  return "Continue";
+}
+
+function recordingStageFromVisit(visit: VisitWithPatient | null): RecordingStage {
+  if (!visit) return "ready";
+  if (visit.status === "INTERRUPTED") return "paused";
+  if (visit.status === "RECORDING") return "paused";
+  if (visit.status === "TRANSCRIBED" || visit.draftSummary?.trim() || visit.approvedSummary?.trim()) return "stopped";
+  return "ready";
 }
 
 function chipTone(status: string) {
@@ -524,9 +526,8 @@ function PatientHistoryBanner({
         <div>
           <p className="text-sm font-bold text-ink">Previous visits found</p>
           <p className="mt-1 text-xs font-semibold text-ink/65">
-            {history.priorVisitCount} prior visit{history.priorVisitCount === 1 ? "" : "s"} with this doctor,
-            {" "}
-            {history.approvedVisitCount} approved.
+            {history.priorVisitCount} prior visit{history.priorVisitCount === 1 ? "" : "s"} ·{" "}
+            {history.approvedVisitCount} approved
           </p>
         </div>
         <button
@@ -535,7 +536,7 @@ function PatientHistoryBanner({
           className="flex h-9 items-center gap-2 rounded-lg bg-moss px-3 text-xs font-bold text-white"
         >
           <ClipboardList size={14} aria-hidden="true" />
-          Open history
+          View history
         </button>
       </div>
     </div>
@@ -564,12 +565,12 @@ function PatientHistoryModal({
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-end bg-ink/40 px-3 py-4 sm:items-center sm:justify-center">
+    <div className="fixed inset-0 z-50 flex items-end bg-ink/40 px-2 py-2 sm:items-center sm:justify-center sm:px-3 sm:py-4">
       <div
         role="dialog"
         aria-modal="true"
         aria-label="Patient history"
-        className="max-h-[88vh] w-full overflow-y-auto rounded-lg bg-white p-4 shadow-soft sm:max-w-2xl"
+        className="max-h-[96vh] w-full overflow-y-auto rounded-2xl bg-white p-4 shadow-soft sm:max-h-[88vh] sm:max-w-2xl"
       >
         <div className="flex items-start justify-between gap-3 border-b border-mint pb-3">
           <div>
@@ -659,9 +660,6 @@ async function clearDevelopmentPwaState() {
 
 export default function Home() {
   const [doctor, setDoctor] = useState<PublicDoctor | null>(null);
-  const [runtimeConfig, setRuntimeConfig] = useState<RuntimeConfigResponse>({
-    demoLogin: { enabled: false }
-  });
   const [publicAccessMode, setPublicAccessMode] = useState<PublicAccessMode>("doctor");
   const [authMode, setAuthMode] = useState<AuthMode>("login");
   const [authForm, setAuthForm] = useState({ name: "", email: "", password: "" });
@@ -694,12 +692,8 @@ export default function Home() {
   const [summaryState, setSummaryState] = useState<SummaryState>("idle");
   const [summaryMessage, setSummaryMessage] = useState("");
   const [emailMessage, setEmailMessage] = useState("");
-  const [testEmailMessage, setTestEmailMessage] = useState("");
   const [unencryptedEmailConsentStatus, setUnencryptedEmailConsentStatus] =
     useState<EmailConsentStatus>("NOT_ASKED");
-  const [usageEvents, setUsageEvents] = useState<UsageEvent[]>([]);
-  const [showUsage, setShowUsage] = useState(false);
-  const [isLoadingUsage, setIsLoadingUsage] = useState(false);
   const [showNewVisit, setShowNewVisit] = useState(false);
   const [newVisitHistory, setNewVisitHistory] = useState<PatientHistoryResponse | null>(null);
   const [newVisitHistoryTab, setNewVisitHistoryTab] = useState<PatientHistoryTab>("VISIT_HISTORY");
@@ -708,11 +702,12 @@ export default function Home() {
   const [newVisitHistoryError, setNewVisitHistoryError] = useState("");
   const [activeVisitHistory, setActiveVisitHistory] = useState<PatientHistoryResponse | null>(null);
   const [activeVisitHistoryTab, setActiveVisitHistoryTab] = useState<PatientHistoryTab>("VISIT_HISTORY");
+  const [isActiveVisitHistoryOpen, setIsActiveVisitHistoryOpen] = useState(false);
   const [isLoadingActiveVisitHistory, setIsLoadingActiveVisitHistory] = useState(false);
   const [activeVisitHistoryError, setActiveVisitHistoryError] = useState("");
   const [isBusy, setIsBusy] = useState(false);
-  const [isSendingTestEmail, setIsSendingTestEmail] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
+  const [recordingStage, setRecordingStage] = useState<RecordingStage>("ready");
   const [micState, setMicState] = useState<MicState>("idle");
   const [micError, setMicError] = useState("");
   const [isOnline, setIsOnline] = useState(true);
@@ -732,7 +727,27 @@ export default function Home() {
   const liveAllowed = isLiveAllowed(activeVisit);
   const microphoneAllowed = canUseMicrophoneForMode(activeMode, activeVisit);
   const visitLocked = Boolean(activeVisit?.approvedSummary);
-  const canViewUsage = Boolean(doctor?.email.endsWith("@doctorai.local"));
+  const transcriptHasText = Boolean(transcript.trim());
+  const summaryLockedByRecording = recordingStage === "recording" || recordingStage === "paused";
+  const canGenerateSummary =
+    Boolean(activeVisit) &&
+    !visitLocked &&
+    transcriptHasText &&
+    !summaryLockedByRecording &&
+    (recordingStage === "stopped" || activeMode === "DOCTOR_SELF_SUMMARY");
+  const canApproveSummary = Boolean(activeVisit && !visitLocked && approvedSummaryDraft.trim());
+  const activeStep = activeVisit?.approvedSummary
+    ? "Share"
+    : draftSummary || approvedSummaryDraft
+      ? "Approve"
+      : canGenerateSummary || summaryState === "generating"
+        ? "Summary"
+        : "Record";
+  const autosaveText = isSaving
+    ? "Saving..."
+    : lastSavedAt
+      ? `Saved ${lastSavedAt}`
+      : "Saved automatically";
 
   const dashboardTitle = useMemo(() => {
     if (!doctor) return "DoctorAI";
@@ -741,6 +756,9 @@ export default function Home() {
 
   const dashboardStats = useMemo(
     () => ({
+      needsReview: visits.filter((visit) => !visit.approvedSummary && Boolean(visit.draftSummary)).length,
+      drafts: visits.filter((visit) => !visit.approvedSummary && !visit.draftSummary).length,
+      approved: visits.filter((visit) => Boolean(visit.approvedSummary)).length,
       interrupted: visits.filter((visit) => visit.status === "INTERRUPTED").length,
       summarized: visits.filter((visit) => Boolean(visit.draftSummary)).length,
       emailed: visits.filter((visit) => Boolean(visit.emailedAt)).length
@@ -759,6 +777,7 @@ export default function Home() {
           setDraftSummary(refreshedActiveVisit.draftSummary || "");
           setApprovedSummaryDraft(refreshedActiveVisit.approvedSummary || refreshedActiveVisit.draftSummary || "");
           setUnencryptedEmailConsentStatus(emailConsentStatusFromVisit(refreshedActiveVisit));
+          if (!recordingRef.current) setRecordingStage(recordingStageFromVisit(refreshedActiveVisit));
         }
       }
       return result.visits;
@@ -801,9 +820,6 @@ export default function Home() {
   useEffect(() => {
     setIsOnline(navigator.onLine);
     void clearDevelopmentPwaState();
-    api<RuntimeConfigResponse>("/api/runtime-config")
-      .then(setRuntimeConfig)
-      .catch(() => setRuntimeConfig({ demoLogin: { enabled: false } }));
 
     const savedDoctor = window.localStorage.getItem("doctorai.doctor");
     const parsedDoctor = parsePersistedDoctor(savedDoctor);
@@ -1024,6 +1040,7 @@ export default function Home() {
 
       await stopAzureRecognizer();
       setIsRecording(false);
+      setRecordingStage("paused");
       setMicState("paused");
 
       const result = await api<{ visit: VisitWithPatient }>(`/api/visits/${visit.id}/interrupt`, {
@@ -1104,31 +1121,14 @@ export default function Home() {
     setSummaryState(visit.approvedSummary ? "approved" : visit.draftSummary ? "ready" : "idle");
     setSummaryMessage("");
     setEmailMessage(visit.emailedAt ? `Emailed ${formatTimestamp(visit.emailedAt)}` : "");
+    setIsActiveVisitHistoryOpen(false);
     dirtyRef.current = false;
     setInterimText("");
-    setMicState("idle");
+    setRecordingStage(recordingStageFromVisit(visit));
+    setMicState(visit.status === "INTERRUPTED" || visit.status === "RECORDING" ? "paused" : "idle");
     setMicError("");
     setNotice("");
     setError("");
-  }
-
-  function useDemoCredentials() {
-    if (!runtimeConfig.demoLogin.enabled || !runtimeConfig.demoLogin.email || !runtimeConfig.demoLogin.password) {
-      setError("Demo login is disabled for this environment.");
-      return;
-    }
-
-    setAuthMode("login");
-    setDoctorLoginMethod("password");
-    setDoctorOtpStep("EMAIL");
-    setDoctorOtpCode("");
-    setAuthForm({
-      name: "",
-      email: runtimeConfig.demoLogin.email,
-      password: runtimeConfig.demoLogin.password
-    });
-    setError("");
-    setNotice("Demo credentials filled.");
   }
 
   async function enterDoctorApp(nextDoctor: PublicDoctor, message: string) {
@@ -1340,24 +1340,25 @@ export default function Home() {
     });
   }
 
-  async function loadUsage() {
-    if (!doctor || !canViewUsage) return;
-    setIsLoadingUsage(true);
-    try {
-      const result = await api<{ usageEvents: UsageEvent[] }>(`/api/usage?limit=18&doctorId=${doctor.id}`);
-      setUsageEvents(result.usageEvents);
-    } finally {
-      setIsLoadingUsage(false);
-    }
-  }
-
   async function generateSummary(saveFirst = true) {
     const visit = activeVisitRef.current;
     if (!visit || !doctor) return;
 
+    if (recordingRef.current || recordingStage === "recording") {
+      setSummaryState("error");
+      setSummaryMessage("Please stop the recording before generating the summary.");
+      return;
+    }
+
+    if (recordingStage === "paused") {
+      setSummaryState("error");
+      setSummaryMessage("Recording is paused. Resume or stop before generating the summary.");
+      return;
+    }
+
     if (!transcriptRef.current.trim()) {
       setSummaryState("error");
-      setSummaryMessage("Add transcript or Doctor Self-Summary text before generating a summary.");
+      setSummaryMessage("Add transcript text before generating the summary.");
       return;
     }
 
@@ -1386,7 +1387,6 @@ export default function Home() {
           : "Draft summary generated with Azure OpenAI."
       );
       await loadVisits(doctor.id, result.visit.id);
-      if (showUsage) await loadUsage();
     } catch (summaryError) {
       setSummaryState("error");
       setSummaryMessage(summaryError instanceof Error ? summaryError.message : "Summary generation failed.");
@@ -1414,7 +1414,7 @@ export default function Home() {
         method: "POST",
         body: JSON.stringify({
           approvedSummary: summaryToApprove,
-          unencryptedEmailConsentStatus
+          unencryptedEmailConsentStatus: "NOT_ASKED"
         })
       });
 
@@ -1424,19 +1424,12 @@ export default function Home() {
       setUnencryptedEmailConsentStatus(emailConsentStatusFromVisit(result.visit));
       setSummaryState("approved");
       setSummaryMessage("Summary approved and saved as the final version.");
-      if (result.emailError) {
-        setEmailMessage(result.emailError);
-      } else if (result.emailSimulated) {
-        setEmailMessage("Summary approved. Secure link email was logged as simulated because ACS is not configured.");
-      } else if (result.emailDeliveryLog || result.visit.emailedAt) {
-        setEmailMessage("Summary approved. Secure summary link sent to the patient email.");
-      } else {
-        setEmailMessage(
-          result.emailMessage || "Summary approved but not emailed. Send Secure Link is available after email consent."
-        );
-      }
+      setEmailMessage(
+        result.emailError ||
+          result.emailMessage ||
+          "Summary approved but not emailed. Confirm email consent, then send the secure link."
+      );
       await loadVisits(doctor.id, result.visit.id);
-      if (showUsage) await loadUsage();
     } catch (approvalError) {
       setSummaryState("error");
       setSummaryMessage(approvalError instanceof Error ? approvalError.message : "Approval failed.");
@@ -1471,41 +1464,11 @@ export default function Home() {
             : "Secure summary link sent to the patient email.")
       );
       await loadVisits(doctor.id, result.visit.id);
-      if (showUsage) await loadUsage();
     } catch (emailError) {
       setEmailMessage(emailError instanceof Error ? emailError.message : "Email sending failed.");
       if (doctor) await loadVisits(doctor.id, visit.id);
     } finally {
       setIsBusy(false);
-    }
-  }
-
-  async function sendTestEmailToSelf() {
-    if (!doctor) return;
-
-    setIsSendingTestEmail(true);
-    setTestEmailMessage("");
-    setError("");
-
-    try {
-      const result = await api<EmailTestResponse>("/api/email-test", {
-        method: "POST",
-        body: JSON.stringify({ doctorId: doctor.id })
-      });
-
-      if (result.emailError) {
-        setTestEmailMessage(result.emailError);
-      } else if (!result.acsConfigured || result.emailSimulated) {
-        setTestEmailMessage("ACS not configured. Test email was logged as simulated.");
-      } else {
-        setTestEmailMessage("Test email sent to your doctor email.");
-      }
-
-      if (showUsage) await loadUsage();
-    } catch (testEmailError) {
-      setTestEmailMessage(testEmailError instanceof Error ? testEmailError.message : "Email failed.");
-    } finally {
-      setIsSendingTestEmail(false);
     }
   }
 
@@ -1615,7 +1578,7 @@ export default function Home() {
 
     if (!canUseMicrophoneForMode(mode, visit)) {
       setMicState("error");
-      setMicError("Live Conversation requires granted recording consent. Doctor Self-Summary remains available.");
+      setMicError("Live conversation recording requires consent. Dictate doctor summary remains available.");
       return;
     }
 
@@ -1650,8 +1613,8 @@ export default function Home() {
         setMicState("azure_unavailable");
         setMicError(
           tokenError instanceof Error
-            ? `${tokenError.message} Add Azure Speech settings, then retry.`
-            : "Azure Speech is unavailable. Add Azure Speech settings, then retry."
+            ? `${tokenError.message} Recording is unavailable right now. Please retry.`
+            : "Recording is unavailable right now. Please retry."
         );
         return;
       }
@@ -1677,7 +1640,7 @@ export default function Home() {
       recognizer.canceled = (_sender, event) => {
         if (stoppingRecognizerRef.current) return;
         setMicState("error");
-        setMicError(event.errorDetails || "Azure Speech recognition stopped unexpectedly.");
+        setMicError(event.errorDetails || "Recording stopped unexpectedly.");
         markInterrupted("azure_speech_canceled").catch((interruptError) => setError(interruptError.message));
       };
 
@@ -1697,6 +1660,7 @@ export default function Home() {
       activeModeRef.current = mode;
       setIsRecording(true);
       recordingRef.current = true;
+      setRecordingStage("recording");
       setMicState("listening");
       await saveTranscript("RECORDING", mode);
     } catch (recordingError) {
@@ -1707,32 +1671,49 @@ export default function Home() {
       setMicState(isDenied ? "denied" : "error");
       setMicError(
         isDenied
-          ? "Microphone permission was denied. You can still use Doctor Self-Summary."
+          ? "Microphone permission was denied. You can still dictate a doctor summary."
           : recordingError instanceof Error
             ? `${recordingError.message} You can retry without changing this visit.`
-            : "Azure Speech transcription failed. You can retry without changing this visit."
+            : "Recording / Dictation failed. You can retry without changing this visit."
       );
     } finally {
       setIsBusy(false);
     }
   }
 
-  async function pauseRecording(generateAfterStop = true) {
+  async function pauseRecording() {
     const mode = activeModeRef.current;
     setIsBusy(true);
     try {
       await stopAzureRecognizer();
       setIsRecording(false);
       recordingRef.current = false;
+      setRecordingStage("paused");
       setMicState("paused");
+      await saveTranscript("RECORDING", mode);
+      setNotice("Recording paused. Your transcript is saved.");
+    } finally {
+      setIsBusy(false);
+    }
+  }
+
+  async function stopRecording() {
+    const mode = activeModeRef.current;
+    setIsBusy(true);
+    try {
+      await stopAzureRecognizer();
+      setIsRecording(false);
+      recordingRef.current = false;
+      setRecordingStage("stopped");
+      setMicState("idle");
       await saveTranscript("TRANSCRIBED", mode);
-      setNotice("Transcription stopped and transcript saved.");
-      if (generateAfterStop && transcriptRef.current.trim()) {
-        await generateSummary(false);
-      } else if (generateAfterStop) {
-        setSummaryState("idle");
-        setSummaryMessage("Transcript saved. Add text before generating a summary.");
-      }
+      setSummaryState(transcriptRef.current.trim() ? "idle" : "error");
+      setSummaryMessage(
+        transcriptRef.current.trim()
+          ? "Transcript saved. Review or edit it before generating the summary."
+          : "Transcript saved. Add text before generating a summary."
+      );
+      setNotice("Recording stopped. Generate Summary is ready when your transcript looks right.");
     } finally {
       setIsBusy(false);
     }
@@ -1758,36 +1739,69 @@ export default function Home() {
 
   async function switchToSelfSummary() {
     if (activeVisitRef.current?.approvedSummary) return;
-    if (recordingRef.current) await pauseRecording(false);
+    if (recordingRef.current) await pauseRecording();
     setActiveMode("DOCTOR_SELF_SUMMARY");
     activeModeRef.current = "DOCTOR_SELF_SUMMARY";
     await saveTranscript("READY_FOR_DOCUMENTATION", "DOCTOR_SELF_SUMMARY");
-    setNotice("Doctor Self-Summary is active.");
+    setNotice("Dictate doctor summary is active.");
   }
 
   async function switchToLive() {
     if (!activeVisit || !liveAllowed || activeVisit.approvedSummary) return;
-    if (recordingRef.current) await pauseRecording(false);
+    if (recordingRef.current) await pauseRecording();
     setActiveMode("LIVE_CONVERSATION");
     activeModeRef.current = "LIVE_CONVERSATION";
     await saveTranscript(activeVisit.status, "LIVE_CONVERSATION");
   }
 
+  function showGenerateBlockedMessage() {
+    setSummaryState("error");
+    if (recordingStage === "recording") {
+      setSummaryMessage("Please stop the recording before generating the summary.");
+      return;
+    }
+    if (recordingStage === "paused") {
+      setSummaryMessage("Recording is paused. Resume or stop before generating the summary.");
+      return;
+    }
+    if (!transcriptRef.current.trim()) {
+      setSummaryMessage("Add transcript text before generating the summary.");
+      return;
+    }
+    if (activeVisitRef.current?.approvedSummary) {
+      setSummaryMessage("This summary is already approved.");
+      return;
+    }
+    setSummaryMessage("Generate Summary is not available yet.");
+  }
+
   if (!doctor) {
     return (
-      <main className="mx-auto flex min-h-screen w-full max-w-3xl flex-col justify-center px-5 py-8">
-        <section className="space-y-7">
-          <div className="space-y-3">
-            <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-moss text-white">
-              <Stethoscope size={25} aria-hidden="true" />
+      <main className="mx-auto flex min-h-screen w-full max-w-4xl flex-col justify-center px-4 py-6 sm:px-6">
+        <section className="space-y-5">
+          <div className="rounded-2xl bg-white p-5 shadow-soft sm:p-6">
+            <div className="flex items-center gap-3">
+              <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-moss text-white">
+                <Stethoscope size={25} aria-hidden="true" />
+              </div>
+              <div>
+                <p className="text-sm font-semibold uppercase tracking-[0.16em] text-moss">DoctorAI</p>
+                <h1 className="mt-1 text-3xl font-bold leading-tight text-ink">AI clinical notes for outpatient visits</h1>
+              </div>
             </div>
-            <div>
-              <p className="text-sm font-semibold uppercase tracking-[0.18em] text-moss">DoctorAI</p>
-              <h1 className="mt-2 text-3xl font-bold leading-tight text-ink">Clinical documentation</h1>
+            <p className="mt-4 text-base leading-relaxed text-ink/70">
+              Record or dictate a consultation, review the AI summary, approve it, and share it securely.
+            </p>
+            <div className="mt-4 grid grid-cols-3 gap-2 text-center text-xs font-bold text-moss">
+              {["Record", "Review", "Approve"].map((step) => (
+                <div key={step} className="rounded-xl bg-clinic px-2 py-3">
+                  {step}
+                </div>
+              ))}
             </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-2 rounded-lg bg-white p-1 shadow-soft">
+          <div className="grid grid-cols-2 gap-2 rounded-2xl bg-white p-1.5 shadow-soft">
             {(["doctor", "patient"] as const).map((mode) => (
               <button
                 key={mode}
@@ -1799,7 +1813,7 @@ export default function Home() {
                   setPatientError("");
                   setPatientMessage("");
                 }}
-                className={`h-11 rounded-md text-sm font-semibold ${
+                className={`min-h-11 rounded-xl px-3 text-sm font-semibold ${
                   publicAccessMode === mode ? "bg-moss text-white" : "text-ink"
                 }`}
               >
@@ -1809,14 +1823,14 @@ export default function Home() {
           </div>
 
           {publicAccessMode === "doctor" ? (
-            <div className="space-y-5 rounded-lg bg-white p-4 shadow-soft">
+            <div className="space-y-5 rounded-2xl bg-white p-4 shadow-soft sm:p-5">
               <div>
                 <h2 className="text-xl font-bold text-ink">Doctor Access</h2>
                 <p className="mt-1 text-sm font-semibold text-ink/65">
-                  Sign in with your password or a one-time email code.
+                  Password login is the default. Email code login and account setup stay one tap away.
                 </p>
               </div>
-          <div className="grid grid-cols-2 gap-2 rounded-lg bg-white p-1 shadow-soft">
+          <div className="grid grid-cols-2 gap-2 rounded-xl bg-clinic p-1">
             {(["signup", "login"] as const).map((mode) => (
               <button
                 key={mode}
@@ -1829,7 +1843,7 @@ export default function Home() {
                   setError("");
                   setNotice("");
                 }}
-                className={`h-11 rounded-md text-sm font-semibold ${
+                className={`min-h-11 rounded-lg px-3 text-sm font-semibold ${
                   authMode === mode ? "bg-moss text-white" : "text-ink"
                 }`}
               >
@@ -1839,7 +1853,7 @@ export default function Home() {
           </div>
 
           {authMode === "login" && (
-            <div className="grid grid-cols-2 gap-2 rounded-lg bg-white p-1 shadow-soft">
+            <div className="grid grid-cols-2 gap-2 rounded-xl bg-clinic p-1">
               {([
                 ["password", "Password"],
                 ["otp", "Login with email code"]
@@ -1854,7 +1868,7 @@ export default function Home() {
                     setError("");
                     setNotice("");
                   }}
-                  className={`min-h-11 rounded-md px-2 text-sm font-semibold ${
+                  className={`min-h-11 rounded-lg px-2 text-sm font-semibold ${
                     doctorLoginMethod === method ? "bg-moss text-white" : "text-ink"
                   }`}
                 >
@@ -2014,20 +2028,6 @@ export default function Home() {
                   Forgot password?
                 </button>
               )}
-              {runtimeConfig.demoLogin.enabled && runtimeConfig.demoLogin.email && runtimeConfig.demoLogin.password && (
-                <>
-                  <button
-                    type="button"
-                    onClick={useDemoCredentials}
-                    className="h-11 w-full rounded-lg border border-mint bg-white text-sm font-bold text-ink"
-                  >
-                    Use demo login
-                  </button>
-                  <p className="rounded-lg bg-clinic px-3 py-2 text-sm font-semibold text-ink">
-                    Demo: {runtimeConfig.demoLogin.email} / {runtimeConfig.demoLogin.password}
-                  </p>
-                </>
-              )}
               {error && <p className="rounded-lg bg-coral px-3 py-2 text-sm font-semibold text-white">{error}</p>}
               {notice && <p className="rounded-lg bg-mint px-3 py-2 text-sm font-semibold text-ink">{notice}</p>}
               <button
@@ -2110,31 +2110,32 @@ export default function Home() {
           )}
             </div>
           ) : (
-            <div className="rounded-lg bg-white p-4 shadow-soft">
+            <div className="rounded-2xl bg-white p-4 shadow-soft sm:p-5">
               {!patientSession ? (
                 <div className="space-y-4">
                   <div>
-                    <h2 className="text-xl font-bold text-ink">Patient Access</h2>
+                    <p className="text-sm font-bold text-moss">Patient?</p>
+                    <h2 className="text-xl font-bold text-ink">View your approved visit summaries</h2>
                     <p className="mt-1 text-sm font-semibold text-ink/65">
-                      View approved visit summaries using the email shared with your doctor.
+                      Enter the email used at the clinic. We'll send a one-time code to verify it's you.
                     </p>
                   </div>
 
                   {patientOtpStep === "EMAIL" ? (
                     <form onSubmit={requestPatientOtp} className="space-y-4">
                       <label className="block text-sm font-semibold text-ink">
-                        Email
+                        Email used at the clinic
                         <input
                           required
                           type="email"
                           value={patientEmail}
                           onChange={(event) => setPatientEmail(event.target.value)}
-                          className="mt-2 h-12 w-full rounded-lg border border-mint bg-white px-3 outline-none focus:border-moss"
+                          className="mt-2 h-12 w-full rounded-xl border border-mint bg-white px-3 outline-none focus:border-moss"
                         />
                       </label>
                       <button
                         disabled={isBusy}
-                        className="flex h-12 w-full items-center justify-center gap-2 rounded-lg bg-moss font-semibold text-white"
+                        className="flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-moss font-semibold text-white"
                       >
                         <Mail size={18} aria-hidden="true" />
                         Send code
@@ -2151,12 +2152,14 @@ export default function Home() {
                           pattern="[0-9]{6}"
                           value={patientOtpCode}
                           onChange={(event) => setPatientOtpCode(event.target.value.replace(/\D/g, "").slice(0, 6))}
-                          className="mt-2 h-12 w-full rounded-lg border border-mint bg-white px-3 text-center text-lg font-bold tracking-[0.25em] outline-none focus:border-moss"
+                          autoComplete="one-time-code"
+                          placeholder="000000"
+                          className="mt-2 h-14 w-full rounded-xl border border-mint bg-white px-3 text-center text-xl font-bold tracking-[0.28em] outline-none focus:border-moss"
                         />
                       </label>
                       <button
                         disabled={isBusy}
-                        className="flex h-12 w-full items-center justify-center gap-2 rounded-lg bg-moss font-semibold text-white"
+                        className="flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-moss font-semibold text-white"
                       >
                         <LogIn size={18} aria-hidden="true" />
                         Verify
@@ -2165,7 +2168,7 @@ export default function Home() {
                         type="button"
                         disabled={isBusy || patientOtpCooldown > 0}
                         onClick={sendPatientOtpCode}
-                        className="h-11 w-full rounded-lg border border-mint bg-white text-sm font-bold text-ink disabled:opacity-60"
+                        className="h-11 w-full rounded-xl border border-mint bg-white text-sm font-bold text-ink disabled:opacity-60"
                       >
                         {patientOtpCooldown > 0 ? `Resend code in ${patientOtpCooldown}s` : "Resend code"}
                       </button>
@@ -2177,7 +2180,7 @@ export default function Home() {
                           setPatientMessage("");
                           setPatientError("");
                         }}
-                        className="h-11 w-full rounded-lg border border-mint bg-white text-sm font-bold text-ink"
+                        className="h-11 w-full rounded-xl border border-mint bg-white text-sm font-bold text-ink"
                       >
                         Use a different email
                       </button>
@@ -2185,10 +2188,10 @@ export default function Home() {
                   )}
 
                   {patientError && (
-                    <p className="rounded-lg bg-coral px-3 py-2 text-sm font-semibold text-white">{patientError}</p>
+                    <p className="rounded-xl bg-coral px-3 py-2 text-sm font-semibold text-white">{patientError}</p>
                   )}
                   {patientMessage && (
-                    <p className="rounded-lg bg-mint px-3 py-2 text-sm font-semibold text-ink">{patientMessage}</p>
+                    <p className="rounded-xl bg-mint px-3 py-2 text-sm font-semibold text-ink">{patientMessage}</p>
                   )}
                 </div>
               ) : (
@@ -2196,24 +2199,24 @@ export default function Home() {
                   <div className="flex flex-wrap items-start justify-between gap-3">
                     <div>
                       <p className="text-sm font-semibold text-moss">Patient portal</p>
-                      <h2 className="text-2xl font-bold text-ink">Approved summaries</h2>
+                      <h2 className="text-2xl font-bold text-ink">My Visit Summaries</h2>
                       <p className="mt-1 break-all text-xs font-semibold text-ink/65">{patientSession.email}</p>
                     </div>
                     <button
                       type="button"
                       disabled={isBusy}
                       onClick={() => logoutPatient().catch((logoutError) => setPatientError(logoutError.message))}
-                      className="h-10 rounded-lg border border-mint bg-white px-3 text-sm font-semibold text-ink"
+                      className="h-10 rounded-xl border border-mint bg-white px-3 text-sm font-semibold text-ink"
                     >
                       Logout
                     </button>
                   </div>
 
-                  <div className="grid grid-cols-2 gap-2 rounded-lg bg-clinic p-1">
+                  <div className="grid grid-cols-2 gap-2 rounded-xl bg-clinic p-1">
                     <button
                       type="button"
                       onClick={() => setPatientPortalTab("VISITS")}
-                      className={`h-10 rounded-md text-sm font-bold ${
+                      className={`h-10 rounded-lg text-sm font-bold ${
                         patientPortalTab === "VISITS" ? "bg-white text-moss shadow-soft" : "text-ink"
                       }`}
                     >
@@ -2222,7 +2225,7 @@ export default function Home() {
                     <button
                       type="button"
                       onClick={() => setPatientPortalTab("PROGRESS")}
-                      className={`h-10 rounded-md text-sm font-bold ${
+                      className={`h-10 rounded-lg text-sm font-bold ${
                         patientPortalTab === "PROGRESS" ? "bg-white text-moss shadow-soft" : "text-ink"
                       }`}
                     >
@@ -2231,42 +2234,46 @@ export default function Home() {
                   </div>
 
                   {patientError && (
-                    <p className="rounded-lg bg-coral px-3 py-2 text-sm font-semibold text-white">{patientError}</p>
+                    <p className="rounded-xl bg-coral px-3 py-2 text-sm font-semibold text-white">{patientError}</p>
                   )}
                   {patientMessage && (
-                    <p className="rounded-lg bg-mint px-3 py-2 text-sm font-semibold text-ink">{patientMessage}</p>
+                    <p className="rounded-xl bg-mint px-3 py-2 text-sm font-semibold text-ink">{patientMessage}</p>
                   )}
 
                   {isLoadingPatientPortal ? (
-                    <p className="rounded-lg bg-clinic px-3 py-2 text-sm font-semibold text-ink">Loading portal.</p>
+                    <p className="rounded-xl bg-clinic px-3 py-2 text-sm font-semibold text-ink">Loading your summaries.</p>
                   ) : patientPortalTab === "VISITS" ? (
                     <div className="space-y-3">
                       {patientPortalVisits.length === 0 ? (
-                        <p className="rounded-lg bg-clinic px-3 py-3 text-sm font-semibold text-ink">
-                          No approved visits yet.
-                        </p>
+                        <div className="rounded-2xl bg-clinic px-4 py-5 text-sm text-ink">
+                          <p className="font-bold">No approved summaries yet.</p>
+                          <p className="mt-1 text-ink/70">
+                            Your visit summaries will appear here after your doctor approves them.
+                          </p>
+                        </div>
                       ) : (
                         patientPortalVisits.map((visit) => {
                           const followUp = extractSummarySection(visit.approvedSummary, "Follow-up / instructions");
                           return (
-                            <div key={visit.id} className="rounded-lg border border-mint bg-clinic p-3">
+                            <div key={visit.id} className="rounded-2xl border border-mint bg-clinic p-4">
                               <div className="flex flex-wrap items-start justify-between gap-2">
                                 <div>
-                                  <p className="text-sm font-bold text-ink">{formatTimestamp(visit.approvedAt || visit.createdAt)}</p>
-                                  <p className="mt-1 text-xs font-semibold text-ink/65">
-                                    {visit.doctor.name} - {visit.doctor.email}
+                                  <p className="text-sm font-bold text-ink">{visit.doctor.name}</p>
+                                  <p className="mt-1 text-xs font-semibold text-ink/65">{visit.doctor.email}</p>
+                                  <p className="mt-2 text-xs font-bold uppercase text-moss">
+                                    {formatTimestamp(visit.approvedAt || visit.createdAt)}
                                   </p>
                                 </div>
                                 <StatusChip status="APPROVED" />
                               </div>
                               <div className="mt-3">
-                                <p className="text-xs font-bold uppercase text-moss">Approved summary</p>
-                                <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed text-ink">
+                                <p className="text-xs font-bold uppercase text-moss">Approved visit summary</p>
+                                <p className="mt-2 max-h-80 overflow-y-auto whitespace-pre-wrap rounded-xl bg-white p-3 text-sm leading-relaxed text-ink">
                                   {visit.approvedSummary}
                                 </p>
                               </div>
                               {followUp && (
-                                <div className="mt-3 rounded-lg bg-white p-3">
+                                <div className="mt-3 rounded-xl border border-mint bg-white p-3">
                                   <p className="text-xs font-bold uppercase text-moss">Follow-up / instructions</p>
                                   <p className="mt-1 text-sm leading-relaxed text-ink/80">{followUp}</p>
                                 </div>
@@ -2279,21 +2286,22 @@ export default function Home() {
                   ) : (
                     <div className="space-y-3">
                       {patientPortalProgress.length === 0 ? (
-                        <p className="rounded-lg bg-clinic px-3 py-3 text-sm font-semibold text-ink">
-                          My Progress appears after at least 2 approved visits with the same doctor.
+                        <p className="rounded-2xl bg-clinic px-4 py-5 text-sm font-semibold text-ink">
+                          Progress appears after multiple approved visits with the same doctor.
                         </p>
                       ) : (
                         patientPortalProgress.map((progress) => (
-                          <div key={progress.doctor.id} className="rounded-lg border border-mint bg-clinic p-3">
+                          <div key={progress.doctor.id} className="rounded-2xl border border-mint bg-clinic p-4">
                             <div className="flex flex-wrap items-start justify-between gap-2">
                               <div>
+                                <p className="text-xs font-bold uppercase text-moss">Progress summary beta</p>
                                 <p className="text-sm font-bold text-ink">{progress.doctor.name}</p>
                                 <p className="mt-1 text-xs font-semibold text-ink/65">{progress.doctor.email}</p>
                                 <p className="mt-1 text-xs font-semibold text-ink/65">
                                   {progress.approvedVisitCount} approved visits
                                 </p>
                               </div>
-                              <span className={`rounded-md px-2 py-1 text-xs font-bold ${trendTone(progress.trend)}`}>
+                              <span className={`rounded-full px-3 py-1 text-xs font-bold ${trendTone(progress.trend)}`}>
                                 {labelFromCode(progress.trend)}
                               </span>
                             </div>
@@ -2308,12 +2316,12 @@ export default function Home() {
                                 <div className="mt-2 space-y-1">
                                   {(items as string[]).length > 0 ? (
                                     (items as string[]).map((item) => (
-                                      <p key={item} className="rounded-lg bg-white px-3 py-2 text-sm leading-relaxed text-ink/80">
+                                      <p key={item} className="rounded-xl bg-white px-3 py-2 text-sm leading-relaxed text-ink/80">
                                         {item}
                                       </p>
                                     ))
                                   ) : (
-                                    <p className="rounded-lg bg-white px-3 py-2 text-sm leading-relaxed text-ink/70">
+                                    <p className="rounded-xl bg-white px-3 py-2 text-sm leading-relaxed text-ink/70">
                                       Not clearly documented in approved summaries.
                                     </p>
                                   )}
@@ -2329,7 +2337,7 @@ export default function Home() {
                   <button
                     type="button"
                     onClick={() => loadPatientPortalData().catch((portalError) => setPatientError(portalError.message))}
-                    className="h-10 w-full rounded-lg border border-mint bg-white text-sm font-bold text-ink"
+                    className="h-10 w-full rounded-xl border border-mint bg-white text-sm font-bold text-ink"
                   >
                     Refresh
                   </button>
@@ -2343,32 +2351,31 @@ export default function Home() {
   }
 
   return (
-    <main className="mx-auto min-h-screen w-full max-w-5xl px-4 py-4 sm:px-6 lg:px-8">
-      <header className="flex flex-wrap items-center justify-between gap-3 border-b border-mint pb-4">
+    <main className="mx-auto min-h-screen w-full max-w-5xl px-4 pb-24 pt-4 sm:px-6 lg:px-8">
+      <header className="sticky top-0 z-20 -mx-4 flex flex-wrap items-center justify-between gap-3 border-b border-mint bg-clinic/95 px-4 py-3 backdrop-blur sm:-mx-6 sm:px-6 lg:-mx-8 lg:px-8">
         <div className="flex items-center gap-3">
-          <div className="flex h-11 w-11 items-center justify-center rounded-lg bg-moss text-white">
+          <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-moss text-white">
             <Stethoscope size={23} aria-hidden="true" />
           </div>
           <div>
             <p className="text-xs font-semibold uppercase tracking-[0.18em] text-moss">DoctorAI</p>
-            <h1 className="text-xl font-bold text-ink">{dashboardTitle}</h1>
+            <h1 className="text-lg font-bold text-ink sm:text-xl">{dashboardTitle}</h1>
+            <p className="text-xs font-semibold text-ink/60">{doctor.name}</p>
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <span className="flex h-10 items-center gap-2 rounded-lg bg-white px-3 text-sm font-bold text-ink">
+          <span className="flex h-10 items-center gap-2 rounded-xl bg-white px-3 text-sm font-bold text-ink shadow-soft">
             {isOnline ? <Wifi size={16} aria-hidden="true" /> : <WifiOff size={16} aria-hidden="true" />}
             {isOnline ? "Online" : "Offline"}
           </span>
           <button
-            className="h-10 rounded-lg border border-mint bg-white px-3 text-sm font-semibold text-ink"
+            className="h-10 rounded-xl border border-mint bg-white px-3 text-sm font-semibold text-ink shadow-soft"
             onClick={async () => {
               window.localStorage.removeItem("doctorai.doctor");
               await stopAzureRecognizer();
               setDoctor(null);
               setVisits([]);
               setActiveVisit(null);
-              setShowUsage(false);
-              setUsageEvents([]);
               setNotice("");
               setError("");
             }}
@@ -2378,24 +2385,39 @@ export default function Home() {
         </div>
       </header>
 
+      <button
+        type="button"
+        onClick={() => setShowNewVisit((current) => !current)}
+        className="mt-5 flex min-h-14 w-full items-center justify-center gap-2 rounded-2xl bg-moss px-5 text-base font-bold text-white shadow-soft"
+      >
+        <Plus size={20} aria-hidden="true" />
+        New Visit
+      </button>
+
       <div className="mt-4 grid grid-cols-3 gap-2">
-        <div className="rounded-lg bg-white p-3 shadow-soft">
-          <p className="text-xs font-bold uppercase text-moss">Interrupted</p>
-          <p className="mt-1 text-xl font-bold text-ink">{dashboardStats.interrupted}</p>
+        <div className="rounded-2xl bg-white p-3 shadow-soft">
+          <p className="text-xs font-bold uppercase text-moss">Needs Review</p>
+          <p className="mt-1 text-xl font-bold text-ink">{dashboardStats.needsReview}</p>
         </div>
-        <div className="rounded-lg bg-white p-3 shadow-soft">
-          <p className="text-xs font-bold uppercase text-moss">Summarized</p>
-          <p className="mt-1 text-xl font-bold text-ink">{dashboardStats.summarized}</p>
+        <div className="rounded-2xl bg-white p-3 shadow-soft">
+          <p className="text-xs font-bold uppercase text-moss">Approved</p>
+          <p className="mt-1 text-xl font-bold text-ink">{dashboardStats.approved}</p>
         </div>
-        <div className="rounded-lg bg-white p-3 shadow-soft">
-          <p className="text-xs font-bold uppercase text-moss">Emailed</p>
+        <div className="rounded-2xl bg-white p-3 shadow-soft">
+          <p className="text-xs font-bold uppercase text-moss">Shared</p>
           <p className="mt-1 text-xl font-bold text-ink">{dashboardStats.emailed}</p>
         </div>
       </div>
 
+      {dashboardStats.interrupted > 0 && (
+        <div className="mt-3 rounded-2xl border border-amberline bg-white px-4 py-3 text-sm font-semibold text-ink">
+          {dashboardStats.interrupted} interrupted visit{dashboardStats.interrupted === 1 ? "" : "s"} need attention.
+        </div>
+      )}
+
       {(notice || error) && (
         <div
-          className={`mt-4 rounded-lg px-4 py-3 text-sm font-semibold ${
+          className={`mt-4 rounded-2xl px-4 py-3 text-sm font-semibold ${
             error ? "bg-coral text-white" : "bg-mint text-ink"
           }`}
         >
@@ -2403,98 +2425,60 @@ export default function Home() {
         </div>
       )}
 
-      <section className="grid gap-5 py-5 lg:grid-cols-[330px_1fr]">
-        <aside className="space-y-5">
+      <section className="grid gap-5 py-5 xl:grid-cols-[360px_1fr]">
+        <section className="space-y-5">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
-              <p className="text-sm font-semibold text-moss">{doctor.name}</p>
-              <h2 className="text-2xl font-bold text-ink">Dashboard</h2>
+              <p className="text-sm font-semibold text-moss">Work queue</p>
+              <h2 className="text-2xl font-bold text-ink">Visits</h2>
             </div>
-            <div className="flex flex-wrap gap-2">
-              {canViewUsage && (
-                <button
-                  onClick={() => {
-                    setShowUsage((current) => {
-                      const next = !current;
-                      if (next) loadUsage().catch((usageError) => setError(usageError.message));
-                      return next;
-                    });
-                  }}
-                  className="flex h-11 items-center gap-2 rounded-lg border border-mint bg-white px-3 text-sm font-bold text-ink"
-                >
-                  <BarChart3 size={18} aria-hidden="true" />
-                  Usage
-                </button>
-              )}
-              <button
-                onClick={() => setShowNewVisit((current) => !current)}
-                className="flex h-11 items-center gap-2 rounded-lg bg-moss px-4 text-sm font-bold text-white"
-              >
-                <Plus size={18} aria-hidden="true" />
-                New Visit
-              </button>
-            </div>
-          </div>
-
-          <div className="rounded-lg bg-white p-4 shadow-soft">
-            <div className="flex flex-wrap items-start justify-between gap-3">
-              <div>
-                <p className="text-sm font-bold text-moss">Email settings</p>
-                <p className="mt-1 break-all text-xs text-ink/65">
-                  Send a test email only to {doctor.email}.
-                </p>
-              </div>
-              <button
-                type="button"
-                disabled={isSendingTestEmail}
-                onClick={() => sendTestEmailToSelf().catch((testEmailError) => setError(testEmailError.message))}
-                className="flex h-10 items-center gap-2 rounded-lg border border-mint bg-white px-3 text-xs font-bold text-ink disabled:opacity-60"
-              >
-                <Mail size={15} aria-hidden="true" />
-                {isSendingTestEmail ? "Sending" : "Send test"}
-              </button>
-            </div>
-            {testEmailMessage && (
-              <p className="mt-3 rounded-lg bg-clinic px-3 py-2 text-sm font-semibold text-ink">
-                {testEmailMessage}
-              </p>
-            )}
           </div>
 
           {showNewVisit && (
-            <form onSubmit={createVisit} className="rounded-lg bg-white p-4 shadow-soft">
-              <h3 className="text-base font-bold text-ink">New visit</h3>
+            <form onSubmit={createVisit} className="rounded-2xl bg-white p-4 shadow-soft sm:p-5">
+              <div>
+                <p className="text-sm font-bold text-moss">New Visit</p>
+                <h3 className="text-xl font-bold text-ink">Patient details</h3>
+              </div>
               <div className="mt-4 grid gap-3">
-                <input
-                  required
-                  placeholder="Patient name"
-                  value={visitForm.patientName}
-                  onChange={(event) => setVisitForm({ ...visitForm, patientName: event.target.value })}
-                  className="h-11 rounded-lg border border-mint px-3 outline-none focus:border-moss"
-                />
-                <input
-                  required
-                  min="0"
-                  placeholder="Age"
-                  type="number"
-                  value={visitForm.patientAge}
-                  onChange={(event) => setVisitForm({ ...visitForm, patientAge: event.target.value })}
-                  className="h-11 rounded-lg border border-mint px-3 outline-none focus:border-moss"
-                />
-                <input
-                  required
-                  placeholder="Patient email"
-                  type="email"
-                  value={visitForm.patientEmail}
-                  onChange={(event) => setVisitForm({ ...visitForm, patientEmail: event.target.value })}
-                  className="h-11 rounded-lg border border-mint px-3 outline-none focus:border-moss"
-                />
-                <input
-                  placeholder="Phone"
-                  value={visitForm.patientPhone}
-                  onChange={(event) => setVisitForm({ ...visitForm, patientPhone: event.target.value })}
-                  className="h-11 rounded-lg border border-mint px-3 outline-none focus:border-moss"
-                />
+                <label className="text-sm font-semibold text-ink">
+                  Patient name
+                  <input
+                    required
+                    value={visitForm.patientName}
+                    onChange={(event) => setVisitForm({ ...visitForm, patientName: event.target.value })}
+                    className="mt-2 h-12 w-full rounded-xl border border-mint px-3 outline-none focus:border-moss"
+                  />
+                </label>
+                <label className="text-sm font-semibold text-ink">
+                  Age
+                  <input
+                    required
+                    min="0"
+                    type="number"
+                    value={visitForm.patientAge}
+                    onChange={(event) => setVisitForm({ ...visitForm, patientAge: event.target.value })}
+                    className="mt-2 h-12 w-full rounded-xl border border-mint px-3 outline-none focus:border-moss"
+                  />
+                </label>
+                <label className="text-sm font-semibold text-ink">
+                  Patient email
+                  <input
+                    required
+                    type="email"
+                    value={visitForm.patientEmail}
+                    onChange={(event) => setVisitForm({ ...visitForm, patientEmail: event.target.value })}
+                    className="mt-2 h-12 w-full rounded-xl border border-mint px-3 outline-none focus:border-moss"
+                  />
+                </label>
+                <label className="text-sm font-semibold text-ink">
+                  Phone <span className="font-normal text-ink/55">(optional)</span>
+                  <input
+                    value={visitForm.patientPhone}
+                    onChange={(event) => setVisitForm({ ...visitForm, patientPhone: event.target.value })}
+                    className="mt-2 h-12 w-full rounded-xl border border-mint px-3 outline-none focus:border-moss"
+                  />
+                </label>
               </div>
 
               <div className="mt-3">
@@ -2508,7 +2492,7 @@ export default function Home() {
 
               <div className="mt-4 space-y-3">
                 <div>
-                  <p className="mb-2 text-sm font-bold text-ink">Recording consent</p>
+                  <p className="mb-2 text-sm font-bold text-ink">Did the patient consent to live conversation recording?</p>
                   <div className="grid grid-cols-3 gap-2">
                     {CONSENT_STATUSES.map((status) => (
                       <button
@@ -2522,7 +2506,7 @@ export default function Home() {
                               status === "GRANTED" ? visitForm.inputModeRequested : "DOCTOR_SELF_SUMMARY"
                           })
                         }
-                        className={`h-10 rounded-lg border text-xs font-bold ${
+                        className={`min-h-11 rounded-xl border px-2 text-xs font-bold ${
                           visitForm.consentStatus === status
                             ? "border-moss bg-moss text-white"
                             : "border-mint bg-white text-ink"
@@ -2532,10 +2516,15 @@ export default function Home() {
                       </button>
                     ))}
                   </div>
+                  {visitForm.consentStatus !== "GRANTED" && (
+                    <p className="mt-2 rounded-xl bg-clinic px-3 py-2 text-xs font-semibold text-ink/70">
+                      Live conversation recording is unavailable without consent. You can still dictate a doctor summary.
+                    </p>
+                  )}
                 </div>
 
                 <div>
-                  <p className="mb-2 text-sm font-bold text-ink">Requested mode</p>
+                  <p className="mb-2 text-sm font-bold text-ink">How will you document this visit?</p>
                   <div className="grid grid-cols-2 gap-2">
                     {INPUT_MODES.map((mode) => (
                       <button
@@ -2543,13 +2532,13 @@ export default function Home() {
                         type="button"
                         disabled={mode === "LIVE_CONVERSATION" && visitForm.consentStatus !== "GRANTED"}
                         onClick={() => setVisitForm({ ...visitForm, inputModeRequested: mode })}
-                        className={`h-10 rounded-lg border text-xs font-bold ${
+                        className={`min-h-12 rounded-xl border px-2 text-xs font-bold ${
                           visitForm.inputModeRequested === mode
                             ? "border-moss bg-mint text-ink"
                             : "border-mint bg-white text-ink"
                         }`}
                       >
-                        {labelFromCode(mode)}
+                        {modeLabel(mode)}
                       </button>
                     ))}
                   </div>
@@ -2558,7 +2547,7 @@ export default function Home() {
 
               <button
                 disabled={isBusy}
-                className="mt-4 flex h-11 w-full items-center justify-center gap-2 rounded-lg bg-moss text-sm font-semibold text-white"
+                className="mt-4 flex min-h-12 w-full items-center justify-center gap-2 rounded-xl bg-moss text-sm font-semibold text-white"
               >
                 <ClipboardList size={17} aria-hidden="true" />
                 Create draft visit
@@ -2566,53 +2555,19 @@ export default function Home() {
             </form>
           )}
 
-          {showUsage && canViewUsage && (
-            <div className="rounded-lg bg-white p-4 shadow-soft">
-              <div className="flex items-center justify-between gap-2">
-                <div>
-                  <p className="text-sm font-bold text-moss">Internal usage</p>
-                  <p className="text-xs text-ink/65">Operational events only, no cost data.</p>
-                </div>
-                <button
-                  onClick={() => loadUsage().catch((usageError) => setError(usageError.message))}
-                  className="flex h-9 items-center gap-2 rounded-lg border border-mint px-3 text-xs font-bold text-ink"
-                >
-                  <RotateCcw size={14} aria-hidden="true" />
-                  Refresh
-                </button>
-              </div>
-              <div className="mt-3 space-y-2">
-                {isLoadingUsage ? (
-                  <p className="rounded-lg bg-clinic px-3 py-2 text-sm font-semibold text-ink">Loading usage events.</p>
-                ) : usageEvents.length === 0 ? (
-                  <p className="rounded-lg bg-clinic px-3 py-2 text-sm font-semibold text-ink">No usage events yet.</p>
-                ) : (
-                  usageEvents.map((event) => (
-                    <div key={event.id} className="rounded-lg border border-mint bg-clinic p-3">
-                      <p className="text-xs font-bold uppercase text-moss">{labelFromCode(event.type)}</p>
-                      <p className="mt-1 text-sm font-semibold text-ink">
-                        {event.visit?.patient.name || event.doctor?.name || "DoctorAI"}
-                      </p>
-                      <p className="text-xs text-ink/65">{formatTimestamp(event.createdAt)}</p>
-                    </div>
-                  ))
-                )}
-              </div>
-            </div>
-          )}
-
           <div className="space-y-3">
             {visits.length === 0 ? (
-              <div className="rounded-lg bg-white p-6 text-center shadow-soft">
+            <div className="rounded-2xl bg-white p-6 text-center shadow-soft">
                 <ClipboardList className="mx-auto text-moss" size={32} aria-hidden="true" />
                 <p className="mt-3 font-bold text-ink">No visits yet</p>
+                <p className="mt-1 text-sm text-ink/60">Tap New Visit to start documentation.</p>
               </div>
             ) : (
               visits.map((visit) => (
                 <button
                   key={visit.id}
                   onClick={() => selectVisit(visit)}
-                  className={`w-full rounded-lg border bg-white p-4 text-left shadow-soft ${
+                  className={`w-full rounded-2xl border bg-white p-4 text-left shadow-soft ${
                     activeVisit?.id === visit.id ? "border-moss" : "border-transparent"
                   }`}
                 >
@@ -2631,15 +2586,19 @@ export default function Home() {
                   </div>
                   <div className="mt-3 grid gap-1 text-sm text-ink/75">
                     <p>Consent: {labelFromCode(visit.consentStatus)}</p>
-                    <p>Actual: {labelFromCode(visit.inputModeActual)}</p>
+                    <p>{modeLabel(visit.inputModeActual)}</p>
+                  </div>
+                  <div className="mt-3 flex items-center justify-between gap-3 rounded-xl bg-clinic px-3 py-2">
+                    <span className="text-xs font-semibold text-ink/65">{formatTimestamp(visit.updatedAt || visit.createdAt)}</span>
+                    <span className="text-sm font-bold text-moss">{visitActionLabel(visit)}</span>
                   </div>
                 </button>
               ))
             )}
           </div>
-        </aside>
+        </section>
 
-        <section className="min-h-[640px] rounded-lg bg-white p-4 shadow-soft sm:p-5">
+        <section className="min-h-[640px] rounded-2xl bg-white p-4 shadow-soft sm:p-5">
           {!activeVisit ? (
             <div className="flex min-h-[560px] items-center justify-center text-center">
               <div>
@@ -2648,140 +2607,199 @@ export default function Home() {
               </div>
             </div>
           ) : (
-            <div className="space-y-5">
-              <div className="flex flex-wrap items-start justify-between gap-3 border-b border-mint pb-4">
-                <div>
-                  <p className="text-sm font-semibold text-moss">
-                    {activeVisit.patient.name}, {activeVisit.patient.age}
-                  </p>
-                  <h2 className="text-2xl font-bold text-ink">{labelFromCode(activeVisit.status)}</h2>
-                  <div className="mt-2 flex flex-wrap gap-1">
-                    {buildVisitChips(activeVisit, isRecording).map((status) => (
-                      <StatusChip key={status} status={status} />
-                    ))}
+            <div className="space-y-5 pb-3">
+              <div className="sticky top-[76px] z-10 rounded-2xl border border-mint bg-white/95 p-4 shadow-soft backdrop-blur">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-semibold text-moss">
+                      {activeVisit.patient.name}, age {activeVisit.patient.age}
+                    </p>
+                    <h2 className="text-2xl font-bold text-ink">{activeStep}</h2>
+                    <div className="mt-2 flex flex-wrap gap-1">
+                      {buildVisitChips(activeVisit, isRecording).map((status) => (
+                        <StatusChip key={status} status={status} />
+                      ))}
+                    </div>
+                    <p className="mt-2 text-sm text-ink/70">
+                      Consent: {labelFromCode(activeVisit.consentStatus)} · {modeLabel(activeMode)}
+                    </p>
                   </div>
-                  <p className="mt-1 text-sm text-ink/70">
-                    Consent: {labelFromCode(activeVisit.consentStatus)} - Resume count: {activeVisit.resumeCount}
-                  </p>
+                  <span className="flex min-h-10 items-center gap-2 rounded-xl bg-clinic px-3 text-sm font-bold text-ink">
+                    <Save size={16} aria-hidden="true" />
+                    {autosaveText}
+                  </span>
                 </div>
-                <span className="flex h-10 items-center gap-2 rounded-lg bg-clinic px-3 text-sm font-bold text-ink">
-                  <Save size={16} aria-hidden="true" />
-                  {isSaving ? "Saving" : lastSavedAt ? `Saved ${lastSavedAt}` : "Autosave ready"}
-                </span>
+                <div className="mt-4 grid grid-cols-4 gap-1 text-center text-[11px] font-bold text-ink/55">
+                  {["Record", "Summary", "Approve", "Share"].map((step) => (
+                    <div
+                      key={step}
+                      className={`rounded-full px-2 py-2 ${
+                        activeStep === step ? "bg-moss text-white" : "bg-clinic text-ink/60"
+                      }`}
+                    >
+                      {step}
+                    </div>
+                  ))}
+                </div>
               </div>
 
-              <PatientHistoryPanel
+              <PatientHistoryBanner
                 history={activeVisitHistory}
                 isLoading={isLoadingActiveVisitHistory}
                 error={activeVisitHistoryError}
-                tab={activeVisitHistoryTab}
-                onTabChange={setActiveVisitHistoryTab}
+                onOpen={() => setIsActiveVisitHistoryOpen(true)}
               />
 
               {activeVisit.status === "INTERRUPTED" && (
-                <div className="rounded-lg border border-amberline bg-clinic p-3">
+                <div className="rounded-2xl border border-amberline bg-white p-4">
                   <div className="flex items-start gap-2">
                     <AlertTriangle className="mt-0.5 text-amberline" size={19} aria-hidden="true" />
                     <div>
                       <p className="font-bold text-ink">Visit interrupted</p>
                       <p className="text-sm text-ink/75">
+                        Your transcript is saved. Resume when ready, or stop to finish this visit.
+                      </p>
+                      <p className="mt-1 text-xs font-semibold text-ink/55">
                         Reason: {labelFromCode(activeVisit.interruptionReason || "risk_event")}
                       </p>
                     </div>
                   </div>
-                  <div className="mt-3 flex flex-wrap gap-2">
-                    <button
-                      disabled={!microphoneAllowed || isBusy || visitLocked}
-                      onClick={() => resumeRecording().catch((resumeError) => setError(resumeError.message))}
-                      className="flex h-10 items-center gap-2 rounded-lg bg-amberline px-3 text-sm font-bold text-ink"
-                    >
-                      <RotateCcw size={17} aria-hidden="true" />
-                      Resume
-                    </button>
-                    <button
-                      onClick={() => switchToSelfSummary().catch((modeError) => setError(modeError.message))}
-                      className="flex h-10 items-center gap-2 rounded-lg border border-mint bg-white px-3 text-sm font-bold text-ink"
-                    >
-                      <ClipboardCheck size={17} aria-hidden="true" />
-                      Doctor Self-Summary
-                    </button>
-                  </div>
                 </div>
               )}
 
-              <div className="grid grid-cols-2 gap-2 rounded-lg bg-clinic p-1">
-                <button
-                  type="button"
-                  disabled={!liveAllowed || visitLocked}
-                  onClick={() => switchToLive().catch((modeError) => setError(modeError.message))}
-                  className={`flex h-11 items-center justify-center gap-2 rounded-md text-sm font-bold ${
-                    activeMode === "LIVE_CONVERSATION" ? "bg-white text-moss shadow-soft" : "text-ink"
-                  }`}
-                >
-                  <Mic size={17} aria-hidden="true" />
-                  Live Conversation
-                </button>
-                <button
-                  type="button"
-                  disabled={visitLocked}
-                  onClick={() => switchToSelfSummary().catch((modeError) => setError(modeError.message))}
-                  className={`flex h-11 items-center justify-center gap-2 rounded-md text-sm font-bold ${
-                    activeMode === "DOCTOR_SELF_SUMMARY" ? "bg-white text-moss shadow-soft" : "text-ink"
-                  }`}
-                >
-                  <ClipboardCheck size={17} aria-hidden="true" />
-                  Doctor Self-Summary
-                </button>
+              <div className="rounded-2xl border border-mint bg-clinic p-2">
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    disabled={!liveAllowed || visitLocked}
+                    onClick={() => switchToLive().catch((modeError) => setError(modeError.message))}
+                    className={`min-h-14 rounded-xl px-3 text-sm font-bold ${
+                      activeMode === "LIVE_CONVERSATION" ? "bg-white text-moss shadow-soft" : "text-ink"
+                    }`}
+                  >
+                    <span className="flex items-center justify-center gap-2">
+                      <Mic size={17} aria-hidden="true" />
+                      Record live conversation
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    disabled={visitLocked}
+                    onClick={() => switchToSelfSummary().catch((modeError) => setError(modeError.message))}
+                    className={`min-h-14 rounded-xl px-3 text-sm font-bold ${
+                      activeMode === "DOCTOR_SELF_SUMMARY" ? "bg-white text-moss shadow-soft" : "text-ink"
+                    }`}
+                  >
+                    <span className="flex items-center justify-center gap-2">
+                      <ClipboardCheck size={17} aria-hidden="true" />
+                      Dictate doctor summary
+                    </span>
+                  </button>
+                </div>
+                {!liveAllowed && (
+                  <p className="mt-2 rounded-xl bg-white px-3 py-2 text-xs font-semibold text-ink/70">
+                    Live conversation recording is unavailable without consent. You can still dictate a doctor summary.
+                  </p>
+                )}
               </div>
 
-              <div className="rounded-lg border border-mint bg-clinic p-3">
+              <div className="rounded-2xl border border-mint bg-white p-4">
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div>
-                    <p className="font-bold text-ink">Azure Speech transcription</p>
-                    <p className="text-sm text-ink/75">
-                      Start requests a short-lived Speech token, then browser microphone permission.
-                    </p>
+                    <p className="font-bold text-ink">Recording / Dictation</p>
+                    <p className="text-sm text-ink/75">Your transcript will appear here as you speak.</p>
                   </div>
-                  <span className="rounded-md bg-white px-2 py-1 text-xs font-bold text-moss">
-                    {labelFromCode(micState)}
+                  <span
+                    className={`rounded-full px-3 py-1 text-xs font-bold ${
+                      recordingStage === "recording"
+                        ? "bg-moss text-white"
+                        : recordingStage === "paused"
+                          ? "bg-amberline text-ink"
+                          : recordingStage === "stopped"
+                            ? "bg-mint text-ink"
+                            : "bg-clinic text-moss"
+                    }`}
+                  >
+                    {recordingStage === "recording"
+                      ? "Recording"
+                      : recordingStage === "paused"
+                        ? "Recording paused"
+                        : recordingStage === "stopped"
+                          ? "Recording stopped"
+                          : "Ready to record"}
                   </span>
                 </div>
-                {micError && <p className="mt-3 rounded-lg bg-coral px-3 py-2 text-sm font-semibold text-white">{micError}</p>}
+                {recordingStage === "paused" && (
+                  <p className="mt-3 rounded-xl bg-clinic px-3 py-2 text-sm font-semibold text-ink/75">
+                    Your transcript is saved. Resume when ready, or stop to finish this visit.
+                  </p>
+                )}
+                {recordingStage === "stopped" && (
+                  <p className="mt-3 rounded-xl bg-clinic px-3 py-2 text-sm font-semibold text-ink/75">
+                    Transcript saved. Review or edit it before generating the summary.
+                  </p>
+                )}
+                {micError && <p className="mt-3 rounded-xl bg-coral px-3 py-2 text-sm font-semibold text-white">{micError}</p>}
                 {interimText && (
-                  <p className="mt-3 rounded-lg bg-white px-3 py-2 text-sm font-semibold text-ink">
+                  <p className="mt-3 rounded-xl bg-clinic px-3 py-2 text-sm font-semibold text-ink">
                     Listening: {interimText}
                   </p>
                 )}
-                <div className="mt-3 flex flex-wrap gap-2">
-                  <button
-                    disabled={!microphoneAllowed || isRecording || isBusy || visitLocked}
-                    onClick={() => startRecording().catch((recordingError) => setError(recordingError.message))}
-                    className="flex h-10 items-center gap-2 rounded-lg bg-moss px-3 text-sm font-bold text-white"
-                  >
-                    <Play size={17} aria-hidden="true" />
-                    Start
-                  </button>
-                  <button
-                    disabled={!isRecording || isBusy}
-                    onClick={() => pauseRecording().catch((pauseError) => setError(pauseError.message))}
-                    className="flex h-10 items-center gap-2 rounded-lg bg-coral px-3 text-sm font-bold text-white"
-                  >
-                    <Pause size={17} aria-hidden="true" />
-                    Stop
-                  </button>
-                  <button
-                    disabled={isRecording || !microphoneAllowed || isBusy || visitLocked}
-                    onClick={() => resumeRecording().catch((resumeError) => setError(resumeError.message))}
-                    className="flex h-10 items-center gap-2 rounded-lg border border-mint bg-white px-3 text-sm font-bold text-ink"
-                  >
-                    <RotateCcw size={17} aria-hidden="true" />
-                    Retry/Resume
-                  </button>
+
+                <div className="mt-4 grid gap-2">
+                  {recordingStage === "ready" && (
+                    <button
+                      disabled={!microphoneAllowed || isBusy || visitLocked}
+                      onClick={() => startRecording().catch((recordingError) => setError(recordingError.message))}
+                      className="flex min-h-12 w-full items-center justify-center gap-2 rounded-xl bg-moss px-4 text-sm font-bold text-white"
+                    >
+                      <Play size={17} aria-hidden="true" />
+                      Start Recording
+                    </button>
+                  )}
+                  {recordingStage === "recording" && (
+                    <div className="grid gap-2 sm:grid-cols-[1fr_auto]">
+                      <button
+                        disabled={isBusy}
+                        onClick={() => pauseRecording().catch((pauseError) => setError(pauseError.message))}
+                        className="flex min-h-12 items-center justify-center gap-2 rounded-xl bg-moss px-4 text-sm font-bold text-white"
+                      >
+                        <Pause size={17} aria-hidden="true" />
+                        Pause Recording
+                      </button>
+                      <button
+                        disabled={isBusy}
+                        onClick={() => stopRecording().catch((stopError) => setError(stopError.message))}
+                        className="flex min-h-12 items-center justify-center gap-2 rounded-xl bg-coral px-4 text-sm font-bold text-white"
+                      >
+                        Stop
+                      </button>
+                    </div>
+                  )}
+                  {recordingStage === "paused" && (
+                    <div className="grid gap-2 sm:grid-cols-[1fr_auto]">
+                      <button
+                        disabled={!microphoneAllowed || isBusy || visitLocked}
+                        onClick={() => resumeRecording().catch((resumeError) => setError(resumeError.message))}
+                        className="flex min-h-12 items-center justify-center gap-2 rounded-xl bg-moss px-4 text-sm font-bold text-white"
+                      >
+                        <RotateCcw size={17} aria-hidden="true" />
+                        Resume Recording
+                      </button>
+                      <button
+                        disabled={isBusy}
+                        onClick={() => stopRecording().catch((stopError) => setError(stopError.message))}
+                        className="flex min-h-12 items-center justify-center rounded-xl bg-coral px-4 text-sm font-bold text-white"
+                      >
+                        Stop
+                      </button>
+                    </div>
+                  )}
                 </div>
               </div>
 
-              <label className="block text-sm font-bold text-ink">
-                {activeMode === "LIVE_CONVERSATION" ? "Live conversation transcript" : "Doctor self-summary"}
+              <label className="block rounded-2xl border border-mint bg-white p-4 text-sm font-bold text-ink">
+                {activeMode === "LIVE_CONVERSATION" ? "Live transcript" : "Doctor summary notes"}
                 <textarea
                   value={transcript}
                   disabled={Boolean(activeVisit.approvedSummary)}
@@ -2790,69 +2808,136 @@ export default function Home() {
                     transcriptRef.current = event.target.value;
                     dirtyRef.current = true;
                   }}
-                  className="mt-2 min-h-[300px] w-full resize-y rounded-lg border border-mint bg-clinic p-3 leading-relaxed outline-none focus:border-moss"
+                  className="mt-3 min-h-[320px] w-full resize-y rounded-xl border border-mint bg-clinic p-3 text-base leading-relaxed outline-none focus:border-moss"
                   placeholder={
                     activeMode === "LIVE_CONVERSATION"
-                      ? "Azure Speech transcript appears here while recording."
-                      : "Type or dictate the doctor's self-summary here."
+                      ? "Transcript appears here while recording."
+                      : "Type or dictate your summary here."
                   }
                 />
+                <span className="mt-2 block text-xs font-semibold text-moss">
+                  {lastSavedAt ? `Saved just now · ${lastSavedAt}` : "Saved automatically every 4 seconds"}
+                </span>
               </label>
 
-              <div className="rounded-lg border border-mint bg-clinic p-3">
-                <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="rounded-2xl border border-mint bg-white p-4">
+                <div className="flex flex-wrap items-start justify-between gap-3">
                   <div>
-                    <p className="font-bold text-ink">Summary review</p>
-                    <p className="text-sm text-ink/75">
-                      Draft generations: {activeVisit.draftGenerationCount}
+                    <p className="font-bold text-ink">AI Summary Draft</p>
+                    <p className="text-sm text-ink/70">
+                      {activeVisit.draftGenerationCount > 0
+                        ? `${activeVisit.draftGenerationCount} draft generation${activeVisit.draftGenerationCount === 1 ? "" : "s"}`
+                        : "AI summary will be available after recording is stopped."}
                     </p>
                   </div>
-                  <span className={`rounded-md px-2 py-1 text-xs font-bold ${chipTone(activeVisit.status)}`}>
+                  <span className={`rounded-full px-3 py-1 text-xs font-bold ${chipTone(summaryState === "generating" ? "SUMMARIZING" : activeVisit.status)}`}>
                     {labelFromCode(summaryState === "generating" ? "SUMMARIZING" : activeVisit.status)}
                   </span>
                 </div>
 
                 {summaryMessage && (
                   <p
-                    className={`mt-3 rounded-lg px-3 py-2 text-sm font-semibold ${
-                      summaryState === "error" ? "bg-coral text-white" : "bg-white text-ink"
+                    className={`mt-3 rounded-xl px-3 py-2 text-sm font-semibold ${
+                      summaryState === "error" ? "bg-coral text-white" : "bg-clinic text-ink"
                     }`}
                   >
                     {summaryMessage}
                   </p>
                 )}
-                {emailMessage && (
-                  <p className="mt-3 rounded-lg bg-white px-3 py-2 text-sm font-semibold text-ink">{emailMessage}</p>
-                )}
 
-                <label className="mt-3 block text-sm font-bold text-ink">
+                <label className="mt-4 block text-sm font-bold text-ink">
                   Draft summary
                   <textarea
                     value={approvedSummaryDraft}
                     disabled={Boolean(activeVisit.approvedSummary)}
                     onChange={(event) => setApprovedSummaryDraft(event.target.value)}
-                    className="mt-2 min-h-[220px] w-full resize-y rounded-lg border border-mint bg-white p-3 leading-relaxed outline-none focus:border-moss"
-                    placeholder="Stop recording or save text, then generate a draft summary."
+                    className="mt-2 min-h-[260px] w-full resize-y rounded-xl border border-mint bg-clinic p-3 text-base leading-relaxed outline-none focus:border-moss"
+                    placeholder={
+                      summaryLockedByRecording
+                        ? "Stop recording before generating the summary."
+                        : "Generate a draft summary, then edit before approval."
+                    }
                   />
                 </label>
 
-                {activeVisit.approvedSummary && (
-                  <div className="mt-3 rounded-lg border border-mint bg-white p-3">
-                    <div className="flex items-center gap-2 text-sm font-bold text-moss">
-                      <CheckCircle2 size={17} aria-hidden="true" />
-                      Approved final summary
-                    </div>
-                    <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed text-ink">
-                      {activeVisit.approvedSummary}
-                    </p>
+                {!activeVisit.approvedSummary && (
+                  <div className="mt-4 grid gap-2">
+                    <button
+                      type="button"
+                      aria-disabled={!canGenerateSummary || summaryState === "generating" || isBusy}
+                      onClick={() => {
+                        if (!canGenerateSummary || summaryState === "generating" || isBusy) {
+                          showGenerateBlockedMessage();
+                          return;
+                        }
+                        generateSummary().catch((summaryError) => setError(summaryError.message));
+                      }}
+                      className={`flex min-h-12 w-full items-center justify-center gap-2 rounded-xl px-4 text-sm font-bold ${
+                        canGenerateSummary && summaryState !== "generating" && !isBusy
+                          ? "bg-moss text-white"
+                          : "bg-clinic text-ink/55"
+                      }`}
+                    >
+                      <Sparkles size={17} aria-hidden="true" />
+                      Generate Summary
+                    </button>
+                    {draftSummary && (
+                      <button
+                        type="button"
+                        aria-disabled={!canGenerateSummary || summaryState === "generating" || isBusy}
+                        onClick={() => {
+                          if (!canGenerateSummary || summaryState === "generating" || isBusy) {
+                            showGenerateBlockedMessage();
+                            return;
+                          }
+                          generateSummary().catch((summaryError) => setError(summaryError.message));
+                        }}
+                        className="flex min-h-11 w-full items-center justify-center gap-2 rounded-xl border border-mint bg-white px-4 text-sm font-bold text-ink"
+                      >
+                        <RotateCcw size={16} aria-hidden="true" />
+                        Regenerate
+                      </button>
+                    )}
                   </div>
                 )}
+              </div>
 
-                <div className="mt-3 rounded-lg border border-mint bg-white p-3">
-                  <p className="text-sm font-bold text-ink">Email delivery consent</p>
-                  <p className="mt-1 text-xs font-semibold text-ink/65">
-                    This controls secure summary link email only. The summary can be approved without email consent.
+              {!activeVisit.approvedSummary && approvedSummaryDraft.trim() && (
+                <div className="rounded-2xl border border-mint bg-white p-4">
+                  <p className="font-bold text-ink">Approve Final Summary</p>
+                  <p className="mt-1 text-sm text-ink/70">
+                    Approval saves the final summary internally. Email sharing is a separate step.
                   </p>
+                  <button
+                    disabled={isBusy || summaryState === "generating" || summaryState === "approving" || !canApproveSummary}
+                    onClick={() => approveSummary().catch((approvalError) => setError(approvalError.message))}
+                    className="mt-4 flex min-h-12 w-full items-center justify-center gap-2 rounded-xl bg-moss px-4 text-sm font-bold text-white"
+                  >
+                    <CheckCircle2 size={17} aria-hidden="true" />
+                    Approve Final Summary
+                  </button>
+                </div>
+              )}
+
+              {activeVisit.approvedSummary && (
+                <div className="rounded-2xl border border-mint bg-white p-4">
+                  <div className="flex items-center gap-2 text-sm font-bold text-moss">
+                    <CheckCircle2 size={17} aria-hidden="true" />
+                    Summary approved
+                  </div>
+                  <p className="mt-3 whitespace-pre-wrap rounded-xl bg-clinic p-3 text-sm leading-relaxed text-ink">
+                    {activeVisit.approvedSummary}
+                  </p>
+                </div>
+              )}
+
+              {activeVisit.approvedSummary && (
+                <div className="rounded-2xl border border-mint bg-white p-4">
+                  <p className="font-bold text-ink">Share with patient</p>
+                  <p className="mt-1 break-all text-sm text-ink/70">{activeVisit.patient.email}</p>
+                  {emailMessage && (
+                    <p className="mt-3 rounded-xl bg-clinic px-3 py-2 text-sm font-semibold text-ink">{emailMessage}</p>
+                  )}
                   <div className="mt-3 grid gap-2 sm:grid-cols-3">
                     {([
                       ["NOT_ASKED", "Not asked"],
@@ -2864,7 +2949,7 @@ export default function Home() {
                         type="button"
                         disabled={Boolean(activeVisit.emailedAt)}
                         onClick={() => setUnencryptedEmailConsentStatus(value)}
-                        className={`h-10 rounded-lg border text-xs font-bold ${
+                        className={`min-h-11 rounded-xl border px-2 text-xs font-bold ${
                           unencryptedEmailConsentStatus === value
                             ? "border-moss bg-mint text-ink"
                             : "border-mint bg-white text-ink"
@@ -2875,65 +2960,30 @@ export default function Home() {
                     ))}
                   </div>
                   {unencryptedEmailConsentStatus !== "APPROVED" && !activeVisit.emailedAt && (
-                    <p className="mt-2 text-xs font-semibold text-coral">
+                    <p className="mt-2 rounded-xl bg-clinic px-3 py-2 text-xs font-semibold text-coral">
                       Send Secure Link is unavailable until email consent is approved.
                     </p>
                   )}
-                </div>
-
-                <div className="mt-3 flex flex-wrap gap-2">
                   <button
                     disabled={
-                      isRecording ||
                       isBusy ||
-                      summaryState === "generating" ||
-                      Boolean(activeVisit.approvedSummary)
-                    }
-                    onClick={() => generateSummary().catch((summaryError) => setError(summaryError.message))}
-                    className="flex h-10 items-center gap-2 rounded-lg bg-moss px-3 text-sm font-bold text-white"
-                  >
-                    <Sparkles size={17} aria-hidden="true" />
-                    {draftSummary ? "Regenerate Summary" : "Generate Summary"}
-                  </button>
-                  <button
-                    disabled={
-                      isRecording ||
-                      isBusy ||
-                      summaryState === "generating" ||
-                      summaryState === "approving" ||
-                      Boolean(activeVisit.approvedSummary) ||
-                      !approvedSummaryDraft.trim()
-                    }
-                    onClick={() => approveSummary().catch((approvalError) => setError(approvalError.message))}
-                    className="flex h-10 items-center gap-2 rounded-lg bg-coral px-3 text-sm font-bold text-white"
-                  >
-                    <CheckCircle2 size={17} aria-hidden="true" />
-                    Approve Summary
-                  </button>
-                  <button
-                    disabled={
-                      isRecording ||
-                      isBusy ||
-                      !activeVisit.approvedSummary ||
                       Boolean(activeVisit.emailedAt) ||
                       unencryptedEmailConsentStatus !== "APPROVED"
                     }
                     onClick={() => sendEmail().catch((emailError) => setError(emailError.message))}
-                    className="flex h-10 items-center gap-2 rounded-lg border border-mint bg-white px-3 text-sm font-bold text-ink"
+                    className="mt-4 flex min-h-12 w-full items-center justify-center gap-2 rounded-xl bg-moss px-4 text-sm font-bold text-white disabled:bg-clinic disabled:text-ink/55"
                   >
                     <Mail size={17} aria-hidden="true" />
                     Send Secure Link
                   </button>
-                  <span className="flex h-10 items-center gap-2 rounded-lg bg-white px-3 text-sm font-bold text-moss">
+                  <p className="mt-3 flex items-center gap-2 text-sm font-bold text-moss">
                     <FileText size={16} aria-hidden="true" />
                     {activeVisit.emailedAt
                       ? `Emailed ${formatTimestamp(activeVisit.emailedAt)}`
-                      : activeVisit.approvedAt
-                        ? `Approved ${formatTimestamp(activeVisit.approvedAt)}`
-                        : "Draft only"}
-                  </span>
+                      : `Approved ${formatTimestamp(activeVisit.approvedAt)}`}
+                  </p>
                 </div>
-              </div>
+              )}
 
               <div className="flex flex-wrap gap-2">
                 <button
@@ -2944,12 +2994,12 @@ export default function Home() {
                       activeMode
                     ).catch((saveError) => setError(saveError.message))
                   }
-                  className="flex h-11 items-center gap-2 rounded-lg bg-moss px-4 text-sm font-bold text-white"
+                  className="flex min-h-11 items-center gap-2 rounded-xl border border-mint bg-white px-4 text-sm font-bold text-ink"
                 >
                   <Save size={17} aria-hidden="true" />
                   Save Draft
                 </button>
-                <span className="flex h-11 items-center rounded-lg bg-clinic px-3 text-sm font-bold text-moss">
+                <span className="flex min-h-11 items-center rounded-xl bg-clinic px-3 text-sm font-bold text-moss">
                   Saved automatically every 4 seconds
                 </span>
               </div>
@@ -2966,6 +3016,16 @@ export default function Home() {
         error={newVisitHistoryError}
         tab={newVisitHistoryTab}
         onTabChange={setNewVisitHistoryTab}
+      />
+      <PatientHistoryModal
+        isOpen={isActiveVisitHistoryOpen}
+        onClose={() => setIsActiveVisitHistoryOpen(false)}
+        patientEmail={activeVisit?.patient.email || ""}
+        history={activeVisitHistory}
+        isLoading={isLoadingActiveVisitHistory}
+        error={activeVisitHistoryError}
+        tab={activeVisitHistoryTab}
+        onTabChange={setActiveVisitHistoryTab}
       />
     </main>
   );

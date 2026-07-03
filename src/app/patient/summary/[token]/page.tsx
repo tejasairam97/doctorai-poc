@@ -18,9 +18,9 @@ function formatDate(value: string | Date | null | undefined) {
 
 function PageShell({ children }: { children: ReactNode }) {
   return (
-    <main className="min-h-screen px-4 py-6 text-ink">
+    <main className="min-h-screen px-4 py-6 text-ink sm:py-8">
       <div className="mx-auto flex w-full max-w-2xl flex-col gap-4">
-        <Link className="text-sm font-bold text-moss" href="/">
+        <Link className="w-fit rounded-full bg-white px-3 py-2 text-sm font-bold text-moss shadow-soft" href="/">
           DoctorAI
         </Link>
         {children}
@@ -45,14 +45,14 @@ export default async function PatientSummaryLinkPage({
   if (access.status === "invalid") {
     return (
       <PageShell>
-        <section className="rounded-lg border border-mint bg-white p-5 shadow-soft">
+        <section className="rounded-2xl border border-mint bg-white p-5 shadow-soft">
           <p className="text-xs font-bold uppercase text-coral">Link unavailable</p>
-          <h1 className="mt-2 text-2xl font-bold text-ink">This summary link cannot be opened</h1>
+          <h1 className="mt-2 text-2xl font-bold text-ink">This summary link is invalid.</h1>
           <p className="mt-3 text-sm leading-relaxed text-ink/75">
-            The link may be invalid, replaced, or no longer connected to an approved visit summary.
+            Please check the link or ask your clinic to send a new secure summary link.
           </p>
           <Link
-            className="mt-5 inline-flex w-full justify-center rounded-md bg-moss px-4 py-3 text-sm font-bold text-white"
+            className="mt-5 inline-flex min-h-12 w-full items-center justify-center rounded-xl bg-moss px-4 py-3 text-sm font-bold text-white"
             href="/"
           >
             Go to Patient Access
@@ -65,15 +65,15 @@ export default async function PatientSummaryLinkPage({
   if (access.status === "expired") {
     return (
       <PageShell>
-        <section className="rounded-lg border border-mint bg-white p-5 shadow-soft">
+        <section className="rounded-2xl border border-mint bg-white p-5 shadow-soft">
           <p className="text-xs font-bold uppercase text-coral">Expired link</p>
-          <h1 className="mt-2 text-2xl font-bold text-ink">This secure summary link has expired</h1>
+          <h1 className="mt-2 text-2xl font-bold text-ink">This summary link has expired.</h1>
           <p className="mt-3 text-sm leading-relaxed text-ink/75">
-            This link was for {access.maskedPatientEmail} and expired {formatDate(access.expiresAt)}. Please contact
-            your clinician's office if you need access.
+            This link was for {access.maskedPatientEmail} and expired {formatDate(access.expiresAt)}. Please ask your
+            clinic to resend it.
           </p>
           <Link
-            className="mt-5 inline-flex w-full justify-center rounded-md bg-moss px-4 py-3 text-sm font-bold text-white"
+            className="mt-5 inline-flex min-h-12 w-full items-center justify-center rounded-xl bg-moss px-4 py-3 text-sm font-bold text-white"
             href="/"
           >
             Go to Patient Access
@@ -98,29 +98,33 @@ export default async function PatientSummaryLinkPage({
 
   return (
     <PageShell>
-      <section className="rounded-lg border border-mint bg-white p-5 shadow-soft">
+      <section className="rounded-2xl border border-mint bg-white p-5 shadow-soft">
         <p className="text-xs font-bold uppercase text-moss">Verified patient summary</p>
-        <h1 className="mt-2 text-2xl font-bold text-ink">Your visit summary</h1>
-        <div className="mt-4 grid gap-3 rounded-md bg-clinic p-4 text-sm text-ink/75">
-          <p>
-            <span className="font-bold text-ink">Doctor:</span> {access.visit.doctor.name} ({access.visit.doctor.email})
-          </p>
-          <p>
-            <span className="font-bold text-ink">Visit date:</span>{" "}
-            {formatDate(access.visit.approvedAt || access.visit.createdAt)}
-          </p>
-          <p>
-            <span className="font-bold text-ink">Link expires:</span> {formatDate(access.expiresAt)}
-          </p>
+        <h1 className="mt-2 text-2xl font-bold text-ink">Your visit summary is ready</h1>
+        <div className="mt-4 grid gap-3 rounded-2xl bg-clinic p-4 text-sm text-ink/75">
+          <div>
+            <p className="text-xs font-bold uppercase text-moss">Doctor</p>
+            <p className="mt-1 font-bold text-ink">{access.visit.doctor.name}</p>
+            <p className="break-all text-xs font-semibold text-ink/60">{access.visit.doctor.email}</p>
+          </div>
+          <div>
+            <p className="text-xs font-bold uppercase text-moss">Visit date</p>
+            <p className="mt-1 font-bold text-ink">{formatDate(access.visit.approvedAt || access.visit.createdAt)}</p>
+          </div>
+          <div>
+            <p className="text-xs font-bold uppercase text-moss">Link expires</p>
+            <p className="mt-1 font-bold text-ink">{formatDate(access.expiresAt)}</p>
+          </div>
         </div>
-        <div className="mt-5 whitespace-pre-wrap rounded-md border border-mint bg-white p-4 text-sm leading-relaxed text-ink">
-          {access.visit.approvedSummary}
+        <div className="mt-5 rounded-2xl border border-mint bg-clinic p-4">
+          <p className="text-xs font-bold uppercase text-moss">Approved summary</p>
+          <p className="mt-3 whitespace-pre-wrap text-sm leading-relaxed text-ink">{access.visit.approvedSummary}</p>
         </div>
         <Link
-          className="mt-5 inline-flex w-full justify-center rounded-md border border-mint bg-white px-4 py-3 text-sm font-bold text-moss"
+          className="mt-5 inline-flex min-h-12 w-full items-center justify-center rounded-xl border border-mint bg-white px-4 py-3 text-sm font-bold text-moss"
           href="/"
         >
-          Open Patient Portal
+          View all my visits
         </Link>
       </section>
     </PageShell>
