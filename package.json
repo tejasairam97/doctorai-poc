@@ -7,11 +7,16 @@
     "node": ">=20"
   },
   "scripts": {
+    "bootstrap": "node scripts/setup.mjs",
     "dev": "next dev",
     "build": "prisma generate && next build",
     "start": "node scripts/start.mjs",
     "lint": "next lint",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:integration": "vitest run --config vitest.integration.config.ts",
     "prisma:generate": "prisma generate",
+    "prisma:push": "prisma db push",
     "prisma:migrate": "prisma migrate dev",
     "db:seed": "prisma db seed"
   },
@@ -33,7 +38,8 @@
     "typescript": "^5.8.3"
   },
   "devDependencies": {
-    "@prisma/debug": "^6.10.1"
+    "@prisma/debug": "^6.10.1",
+    "vitest": "^3.2.4"
   },
   "prisma": {
     "seed": "node prisma/seed.js"

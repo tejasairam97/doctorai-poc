@@ -1,0 +1,21 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: doctorai-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: doctorai
+      POSTGRES_USER: doctorai_user
+      POSTGRES_PASSWORD: doctorai_local_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - doctorai-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U doctorai_user -d doctorai"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  doctorai-postgres-data:
