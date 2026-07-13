@@ -11,7 +11,7 @@ export default defineConfig({
     environment: "node",
     globals: false,
     include: ["src/**/*.test.ts"],
-    exclude: ["src/**/*.integration.test.ts", "src/**/*.stress.test.ts"],
+    exclude: ["src/**/*.integration.test.ts", "src/**/*.load.test.ts"],
     restoreMocks: true
   }
 });

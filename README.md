@@ -44,16 +44,16 @@ cp .env.example .env.local
 
 Keep `.env.local` on your machine only; it is ignored by git. By default, `.env.example` is now set up for a locally installed PostgreSQL server. Fill in the Azure placeholder values when you are ready to use real Azure services. Placeholder values are treated as not externally configured, so local summary/email flows use safe simulated fallbacks.
 
-### Opt-in Azure OpenAI reliability stress test
+### Opt-in Azure OpenAI reliability load test
 
-The Azure stress test makes real Azure OpenAI requests and can incur model charges. It sends only a fixed synthetic transcript, never reads from the database, and does not invoke Azure Speech or ACS Email. It is disabled unless you explicitly opt in:
+The Azure load test makes real Azure OpenAI requests and can incur model charges. It sends only a fixed synthetic transcript, never reads from the database, and does not invoke Azure Speech or ACS Email. It is disabled unless you explicitly opt in:
 
 ```powershell
-$env:RUN_AZURE_STRESS_TESTS="true"
-pnpm test:stress:azure
+$env:RUN_AZURE_LOAD_TESTS="true"
+pnpm test:load:azure
 ```
 
-The default is six requests at concurrency two. Tune `AZURE_STRESS_REQUESTS` (1–20), `AZURE_STRESS_CONCURRENCY` (1–5), and `AZURE_STRESS_MAX_P95_MS` (1–180000) for a controlled run. The test fails on a request error, fallback response, missing required summary sections, or p95 latency above the configured budget.
+The default is six requests at concurrency two. Tune `AZURE_LOAD_REQUESTS` (1–20), `AZURE_LOAD_CONCURRENCY` (1–5), and `AZURE_LOAD_MAX_P95_MS` (1–180000) for a controlled run. The test fails on a request error, fallback response, missing required summary sections, or p95 latency above the configured budget.
 
 For locally installed PostgreSQL, the default connection string shape is:
 

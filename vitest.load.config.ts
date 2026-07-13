@@ -6,8 +6,8 @@ export default defineConfig({
   test: {
     environment: "node",
     globals: false,
-    include: ["src/**/*.stress.test.ts"],
-    setupFiles: ["./src/test/stress-env.ts"],
+    include: ["src/**/*.load.test.ts"],
+    setupFiles: ["./src/test/load-env.ts"],
     restoreMocks: true,
     // Request parallelism is controlled inside the test to avoid accidental load multiplication.
     pool: "forks",

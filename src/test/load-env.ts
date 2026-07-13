@@ -22,8 +22,8 @@ Object.assign(process.env, {
   ...process.env
 });
 
-if (process.env.RUN_AZURE_STRESS_TESTS !== "true") {
-  throw new Error("Azure stress tests are disabled. Set RUN_AZURE_STRESS_TESTS=true explicitly before running them.");
+if (process.env.RUN_AZURE_LOAD_TESTS !== "true") {
+  throw new Error("Azure load tests are disabled. Set RUN_AZURE_LOAD_TESTS=true explicitly before running them.");
 }
 
 const config = getSummaryConfigStatus();
@@ -32,5 +32,5 @@ if (!config.configured) {
     .filter(([, isMissing]) => isMissing)
     .map(([name]) => name)
     .join(", ");
-  throw new Error(`Azure stress tests need configured Azure OpenAI credentials. Missing: ${missing}.`);
+  throw new Error(`Azure load tests need configured Azure OpenAI credentials. Missing: ${missing}.`);
 }

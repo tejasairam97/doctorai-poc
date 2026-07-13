@@ -11,9 +11,9 @@ function readPositiveInteger(name: string, fallback: number, maximum: number) {
   return value;
 }
 
-const requestCount = readPositiveInteger("AZURE_STRESS_REQUESTS", 6, 20);
-const concurrency = readPositiveInteger("AZURE_STRESS_CONCURRENCY", 2, 5);
-const maxP95Ms = readPositiveInteger("AZURE_STRESS_MAX_P95_MS", 60_000, 180_000);
+const requestCount = readPositiveInteger("AZURE_LOAD_REQUESTS", 6, 20);
+const concurrency = readPositiveInteger("AZURE_LOAD_CONCURRENCY", 2, 5);
+const maxP95Ms = readPositiveInteger("AZURE_LOAD_MAX_P95_MS", 60_000, 180_000);
 const syntheticTranscript = [
   "Doctor: This is an automated reliability test using synthetic, non-patient data.",
   "Patient: I have had a mild cough for three days and no fever.",
@@ -33,7 +33,7 @@ function percentile95(values: number[]) {
   return sorted[Math.ceil(sorted.length * 0.95) - 1] ?? 0;
 }
 
-describe("Azure OpenAI synthetic reliability stress test", () => {
+describe("Azure OpenAI synthetic reliability load test", () => {
   it("serves concurrent synthetic draft-summary requests within the configured latency budget", async () => {
     const tasks = Array.from({ length: requestCount }, () => async () => {
       const startedAt = performance.now();
@@ -57,7 +57,7 @@ describe("Azure OpenAI synthetic reliability stress test", () => {
     }
 
     const p95Ms = percentile95(durations);
-    console.info(`[Azure stress] requests=${requestCount} concurrency=${concurrency} p95Ms=${Math.round(p95Ms)} maxMs=${Math.round(Math.max(...durations))}`);
+    console.info(`[Azure load] requests=${requestCount} concurrency=${concurrency} p95Ms=${Math.round(p95Ms)} maxMs=${Math.round(Math.max(...durations))}`);
     expect(p95Ms).toBeLessThanOrEqual(maxP95Ms);
   });
 });
