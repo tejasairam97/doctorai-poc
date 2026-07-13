@@ -20,15 +20,48 @@ Patient portal, appointment workflows, and front desk tooling are intentionally 
 pnpm install
 ```
 
-2. Create `.env.local` for local development:
+2. Install PostgreSQL locally and create a database named `doctorai`.
+
+Use the default local port `5432`, then create the database with `pgAdmin` or:
+
+```sql
+CREATE DATABASE doctorai;
+```
+
+3. Use the repo bootstrap helper to do the common local setup steps in one go:
+
+```bash
+pnpm bootstrap
+```
+
+By default, `pnpm bootstrap` installs dependencies, creates `.env.local` from `.env.example` if needed, and runs `pnpm prisma:generate`. If `DATABASE_URL` is already configured with a non-placeholder value, it also runs `pnpm prisma:push`. Add `--seed` if you want demo data seeded during setup.
+
+4. Create or review `.env.local` for local development:
 
 ```bash
 cp .env.example .env.local
 ```
 
-Fill in the placeholder values when you are ready to use real Azure services. Keep `.env.local` on your machine only; it is ignored by git. Placeholder values are treated as not externally configured, so local summary/email flows use safe simulated fallbacks.
+Keep `.env.local` on your machine only; it is ignored by git. By default, `.env.example` is now set up for a locally installed PostgreSQL server. Fill in the Azure placeholder values when you are ready to use real Azure services. Placeholder values are treated as not externally configured, so local summary/email flows use safe simulated fallbacks.
 
-For PostgreSQL, set `DATABASE_URL` to a PostgreSQL connection string. For Azure Database for PostgreSQL Flexible Server, include `sslmode=require` and make sure your database exists and your local IP is allowed by the server firewall:
+### Opt-in Azure OpenAI reliability stress test
+
+The Azure stress test makes real Azure OpenAI requests and can incur model charges. It sends only a fixed synthetic transcript, never reads from the database, and does not invoke Azure Speech or ACS Email. It is disabled unless you explicitly opt in:
+
+```powershell
+$env:RUN_AZURE_STRESS_TESTS="true"
+pnpm test:stress:azure
+```
+
+The default is six requests at concurrency two. Tune `AZURE_STRESS_REQUESTS` (1–20), `AZURE_STRESS_CONCURRENCY` (1–5), and `AZURE_STRESS_MAX_P95_MS` (1–180000) for a controlled run. The test fails on a request error, fallback response, missing required summary sections, or p95 latency above the configured budget.
+
+For locally installed PostgreSQL, the default connection string shape is:
+
+```bash
+DATABASE_URL="postgresql://postgres:your-local-postgres-password@localhost:5432/doctorai?schema=public"
+```
+
+For Azure Database for PostgreSQL Flexible Server instead, include `sslmode=require` and make sure your database exists and your local IP is allowed by the server firewall:
 
 ```bash
 DATABASE_URL="postgresql://doctorai_user:password@your-server.postgres.database.azure.com:5432/doctorai?sslmode=require"
@@ -60,7 +93,7 @@ ACS_SENDER_ADDRESS="DoNotReply@your-verified-domain.example"
 
 Do not prefix secrets with `NEXT_PUBLIC_`. Server routes read these values and issue short-lived browser-safe Speech tokens; the browser never receives long-lived Azure keys.
 
-3. Generate the Prisma client and apply the schema to your PostgreSQL database:
+5. Generate the Prisma client and apply the schema to your PostgreSQL database:
 
 ```bash
 pnpm prisma:generate
@@ -69,13 +102,13 @@ pnpm prisma db push
 
 For a fresh managed PostgreSQL database, `prisma db push` is the simplest POC path. If you want migration history applied instead, use `pnpm prisma:migrate` against a fresh PostgreSQL database after confirming the connection string points to the intended database.
 
-4. Seed demo data, if you want the demo account and one sample draft visit:
+6. Seed demo data, if you want the demo account and one sample draft visit:
 
 ```bash
 pnpm db:seed
 ```
 
-5. Run the app:
+7. Run the app:
 
 ```bash
 pnpm dev
@@ -88,6 +121,15 @@ For local testing on a specific port, pass the port to Next.js instead of hard-c
 ```bash
 pnpm dev -- -p 3002
 ```
+
+For a fully local database workflow, the usual loop is:
+
+```bash
+pnpm bootstrap --seed
+pnpm dev
+```
+
+Use the same Azure Speech, Azure OpenAI, and ACS keys locally if you want the real integrations. The safer split is local app + local Postgres + shared Azure service keys, rather than sharing the deployed app's database.
 
 ## Environment Configuration
 

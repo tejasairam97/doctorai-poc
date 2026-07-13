@@ -72,7 +72,7 @@ Important schema facts:
 
 Reference:
 
-- [schema.prisma](C:/Users/tejas/Documents/Codex/2026-06-17/you-are-building-mvp-v1-of/prisma/schema.prisma)
+- [schema.prisma](prisma/schema.prisma)
 
 ## 3. Current API/routes summary
 
@@ -148,7 +148,7 @@ Behavior notes:
 
 Reference:
 
-- [server-config.ts](C:/Users/tejas/Documents/Codex/2026-06-17/you-are-building-mvp-v1-of/src/lib/server-config.ts)
+- [server-config.ts](src/lib/server-config.ts)
 
 ## 5. Current Azure deployment setup
 
@@ -165,14 +165,14 @@ Current deployment assumptions:
 
 Reference:
 
-- [start.mjs](C:/Users/tejas/Documents/Codex/2026-06-17/you-are-building-mvp-v1-of/scripts/start.mjs)
-- [package.json](C:/Users/tejas/Documents/Codex/2026-06-17/you-are-building-mvp-v1-of/package.json)
+- [start.mjs](scripts/start.mjs)
+- [package.json](package.json)
 
 ## 6. Current GitHub Actions deployment setup
 
 Workflow file:
 
-- [deploy-doctorai.yml](C:/Users/tejas/Documents/Codex/2026-06-17/you-are-building-mvp-v1-of/.github/workflows/deploy-doctorai.yml)
+- [deploy-doctorai.yml](.github/workflows/deploy-doctorai.yml)
 
 Current workflow behavior:
 
@@ -237,7 +237,7 @@ Important: this workflow was recently changed away from artifact packaging becau
 
 ## 9. Special implementation details the next Codex context must know
 
-- Frontend app is mostly in [page.tsx](C:/Users/tejas/Documents/Codex/2026-06-17/you-are-building-mvp-v1-of/src/app/page.tsx); it is a large single client component driving auth, dashboard, recording, transcript autosave, summary review, and email actions
+- Frontend app is mostly in [page.tsx](src/app/page.tsx); it is a large single client component driving auth, dashboard, recording, transcript autosave, summary review, and email actions
 - Auth is not cookie/session based; it is localStorage-driven
 - `ensureDemoDoctor()` is blocked when `ENABLE_DEMO_LOGIN` is false
 - Summary approval and email sending are intentionally separate actions
